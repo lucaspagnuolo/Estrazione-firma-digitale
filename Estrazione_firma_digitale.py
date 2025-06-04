@@ -4,18 +4,15 @@ import zipfile
 import tarfile
 import subprocess
 import tempfile
+import base64
 from pathlib import Path
 
+def get_image_base64(image_path):
+    with open(image_path, "rb") as image_file:
+        return base64.b64encode(image_file.read()).decode()
+
 def extract_signed_content(p7m_file_path, output_dir):
-    """
-    Estrae il contenuto di un file .p7m (CAdES/CMS) usando openssl cms.
-    Se il payload estratto è un archivio (ZIP o TAR), non lo scompatta qui: 
-    questa funzione si limita a scrivere il payload grezzo in 'output_dir'.
-    - p7m_file_path: Path al file .p7m da estrarre
-    - output_dir: Path alla directory dove salvare il file estratto (payload)
-    Ritorna il Path del file estratto (payload), oppure None in caso di errore.
-    """
-    payload_filename = p7m_file_path.stem  # es. "documenti_multiple.zip"
+    payload_filename = p7m_file_path.stem
     output_file = output_dir / payload_filename
 
     result = subprocess.run(
@@ -36,32 +33,42 @@ def extract_signed_content(p7m_file_path, output_dir):
     return output_file
 
 def unpack_inner_archive(payload_path, destination_dir):
-    """
-    Se 'payload_path' è un archivio ZIP o TAR, lo scompatta dentro 'destination_dir'.
-    Ritorna True se è stato un archivio e l'abbiamo scompattato, False altrimenti.
-    Dopo lo scompattamento, elimina l'archivio originale.
-    """
-    # Caso ZIP
     if zipfile.is_zipfile(payload_path):
         with zipfile.ZipFile(payload_path, 'r') as zf:
             zf.extractall(destination_dir)
-        payload_path.unlink()  # cancello l'archivio ZIP originale
+        payload_path.unlink()
         return True
 
-    # Caso TAR / TAR.GZ / TAR.BZ2
     try:
         if tarfile.is_tarfile(payload_path):
             with tarfile.open(payload_path, 'r:*') as tf:
                 tf.extractall(destination_dir)
-            payload_path.unlink()  # cancello l'archivio TAR originale
+            payload_path.unlink()
             return True
     except tarfile.TarError:
         pass
 
     return False
 
+# === TITOLO E LOGO ===
+st.set_page_config(layout="wide")  # Opzionale: per più spazio
+
 st.title("Estrattore di file firmati digitalmente (CAdES)")
 
+# Inserisce il logo in alto a destra
+logo_path = Path(r"C:\Users\luca.spagnuolo.ext\Downloads\Consip_Logo.png")
+if logo_path.exists():
+    logo_base64 = get_image_base64(logo_path)
+    st.markdown(
+        f"""
+        <div style="position: absolute; top: 10px; right: 10px;">
+            <img src="data:image/png;base64,{logo_base64}" width="120"/>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+# === UPLOADER ===
 uploaded_files = st.file_uploader(
     "Carica uno o più file .p7m",
     accept_multiple_files=True,
@@ -69,46 +76,37 @@ uploaded_files = st.file_uploader(
 )
 
 if uploaded_files:
-    # Creo una cartella temporanea unica per tutti i file caricati
     root_temp = Path(tempfile.mkdtemp(prefix="combined_"))
-    
+
     for uploaded_file in uploaded_files:
         st.write(f"File caricato: {uploaded_file.name}")
         
-        # Crea una sottocartella per questo .p7m, usando il nome senza estensione
         stem = Path(uploaded_file.name).stem
         file_dir = root_temp / stem
         file_dir.mkdir(parents=True, exist_ok=True)
         
-        # Salva il file .p7m
         p7m_file_path = file_dir / uploaded_file.name
         with open(p7m_file_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
         
-        # Cartella dove mettere l'output dell'estrazione
         extracted_dir = file_dir / "estratto"
         extracted_dir.mkdir(exist_ok=True)
 
-        # Estraggo il payload firmato
         payload_path = extract_signed_content(p7m_file_path, extracted_dir)
         if not payload_path:
             continue
 
-        # Se il payload è un archivio, lo scompatta
         _ = unpack_inner_archive(payload_path, extracted_dir)
 
-    # Dopo aver estratto tutti, creo un unico ZIP con tutte le cartelle
     zip_file_path = root_temp / "all_extracted.zip"
     with zipfile.ZipFile(zip_file_path, "w", zipfile.ZIP_DEFLATED) as zipf:
         for root, _, files in os.walk(root_temp):
             for file in files:
-                # Evito di includere lo stesso ZIP all'interno
                 if file == "all_extracted.zip":
                     continue
                 file_path = Path(root) / file
                 zipf.write(file_path, file_path.relative_to(root_temp))
 
-    # Mostro un unico pulsante per scaricare lo ZIP con tutto il contenuto
     with open(zip_file_path, "rb") as f:
         st.download_button(
             label="Scarica un unico zip con tutte le cartelle estratte",
