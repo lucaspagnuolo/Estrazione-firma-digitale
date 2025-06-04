@@ -21,11 +21,12 @@ with col2:
 # --- Funzione che esegue il cms -verify di OpenSSL e legge certificato -----
 def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path | None, str, bool]:
     """
-    Estrae il contenuto di un file .p7m (CAdES/CMS) usando OpenSSL,
-    estrae il certificato, legge il Common Name e controlla se è ancora valido.
-    Ritorna (output_file, signer_name, is_valid) oppure (None, "", False) in caso di errore.
+    Estrae il contenuto di un file .p7m, estrae il certificato e ritorna:
+    (output_file, signer_name, is_valid).
+    Se c'è un errore nell’estrazione, restituisce (None, "", False).
     """
-    payload_filename = p7m_file_path.stem  # nome senza ".p7m"
+
+    payload_filename = p7m_file_path.stem
     output_file = output_dir / payload_filename
 
     # 1) Estraggo il payload firmato
@@ -34,7 +35,7 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
             "openssl", "cms", "-verify",
             "-in", str(p7m_file_path),
             "-inform", "DER",
-            "-noverify",  # non verifica la catena di fiducia completa
+            "-noverify",
             "-out", str(output_file)
         ],
         capture_output=True
@@ -59,7 +60,7 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
         st.error(f"Errore estrazione certificato da «{p7m_file_path.name}»: {proc_cert.stderr.decode().strip()}")
         return output_file, "Sconosciuto", False
 
-    # 3) Leggo subject e date di validità dal certificato
+    # 3) Leggo subject e date di validità
     proc_info = subprocess.run(
         [
             "openssl", "x509",
@@ -76,16 +77,21 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
         return output_file, "Sconosciuto", False
 
     lines = proc_info.stdout.splitlines()
-    # lines[0]: subject= /C=IT/O=…/CN=Nome Cognome
-    # lines[1]: notBefore=Jun  1 00:00:00 2023 GMT
-    # lines[2]: notAfter=May 31 23:59:59 2025 GMT
+    # DEBUG: per capire esattamente il formato di lines[0]
+    st.write("DEBUG: subject grezzo:", repr(lines[0]))
 
-    # 3a) Ricavo il Common Name (CN)
+    # 3a) Estraggo il firmatario cercando più RDN possibili
     subject_line = lines[0]
-    m = re.search(r"CN=([^,/]+)", subject_line)
-    signer_name = m.group(1).strip() if m else "Sconosciuto"
+    candidato_rdn = ["CN", "SN", "UID", "emailAddress", "SERIALNUMBER"]
+    signer_name = "Sconosciuto"
+    for rdn in candidato_rdn:
+        pattern = rf"{rdn}\s*=\s*([^,/]+)"
+        m = re.search(pattern, subject_line)
+        if m:
+            signer_name = m.group(1).strip()
+            break
 
-    # 3b) Converto le date in datetime
+    # 3b) Converto le date (notBefore / notAfter) in datetime
     def parse_openssl_date(s: str) -> datetime:
         text = s.strip()  # es. "Jun  1 00:00:00 2023 GMT"
         return datetime.strptime(text, "%b %d %H:%M:%S %Y %Z")
