@@ -3,6 +3,7 @@ import os
 import zipfile
 import tarfile
 import subprocess
+import tempfile
 from pathlib import Path
 
 def extract_signed_content(p7m_file_path, output_dir):
@@ -14,11 +15,9 @@ def extract_signed_content(p7m_file_path, output_dir):
     - output_dir: Path alla directory dove salvare il file estratto (payload)
     Ritorna il Path del file estratto (payload), oppure None in caso di errore.
     """
-    # Costruisco il percorso di output: rimuovo l'estensione .p7m
     payload_filename = p7m_file_path.stem  # es. "documenti_multiple.zip"
     output_file = output_dir / payload_filename
 
-    # Eseguo il comando openssl cms -verify (formato DER)
     result = subprocess.run(
         [
             'openssl', 'cms', '-verify',
@@ -35,7 +34,6 @@ def extract_signed_content(p7m_file_path, output_dir):
         return None
 
     return output_file
-
 
 def unpack_inner_archive(payload_path, destination_dir):
     """
@@ -62,10 +60,8 @@ def unpack_inner_archive(payload_path, destination_dir):
 
     return False
 
-
 st.title("Estrattore di file firmati digitalmente (CAdES)")
 
-# Uploader per i file .p7m
 uploaded_files = st.file_uploader(
     "Carica uno o più file .p7m",
     accept_multiple_files=True,
@@ -73,49 +69,50 @@ uploaded_files = st.file_uploader(
 )
 
 if uploaded_files:
+    # Creo una cartella temporanea unica per tutti i file caricati
+    root_temp = Path(tempfile.mkdtemp(prefix="combined_"))
+    
     for uploaded_file in uploaded_files:
         st.write(f"File caricato: {uploaded_file.name}")
         
-        # Creo una directory temporanea dedicata a questo file
-        temp_dir = Path(f"temp_{uploaded_file.name.replace('.p7m', '')}")
-        temp_dir.mkdir(parents=True, exist_ok=True)
+        # Crea una sottocartella per questo .p7m, usando il nome senza estensione
+        stem = Path(uploaded_file.name).stem
+        file_dir = root_temp / stem
+        file_dir.mkdir(parents=True, exist_ok=True)
         
-        # Salvo il file .p7m all'interno della cartella temporanea
-        p7m_file_path = temp_dir / uploaded_file.name
+        # Salva il file .p7m
+        p7m_file_path = file_dir / uploaded_file.name
         with open(p7m_file_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
         
-        # Creo la sottocartella dove metterò il payload estratto
-        extracted_dir = temp_dir / "estratto"
+        # Cartella dove mettere l'output dell'estrazione
+        extracted_dir = file_dir / "estratto"
         extracted_dir.mkdir(exist_ok=True)
 
-        # Estraggo il payload firmato (potrebbe essere un singolo file .pdf, .zip, .tar, ecc.)
+        # Estraggo il payload firmato
         payload_path = extract_signed_content(p7m_file_path, extracted_dir)
         if not payload_path:
-            # Se l'estrazione è fallita, passo al prossimo file
             continue
 
-        # Se il payload è un archivio (ZIP o TAR), lo scompatto nella stessa cartella 'estratto'
-        # e rimuovo l'archivio originale.
+        # Se il payload è un archivio, lo scompatta
         _ = unpack_inner_archive(payload_path, extracted_dir)
 
-        # A questo punto, 'extracted_dir' contiene TUTTI i file estratti:
-        # - Se il p7m conteneva un singolo PDF, 'extracted_dir' conterrà quel PDF
-        # - Se il p7m conteneva un .zip con 500 documenti, 'extracted_dir' conterrà i 500 documenti
+    # Dopo aver estratto tutti, creo un unico ZIP con tutte le cartelle
+    zip_file_path = root_temp / "all_extracted.zip"
+    with zipfile.ZipFile(zip_file_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+        for root, _, files in os.walk(root_temp):
+            for file in files:
+                # Evito di includere lo stesso ZIP all'interno
+                if file == "all_extracted.zip":
+                    continue
+                file_path = Path(root) / file
+                zipf.write(file_path, file_path.relative_to(root_temp))
 
-        # Creo uno ZIP di tutto ciò che si trova in 'extracted_dir'
-        zip_file_path = temp_dir / f"{uploaded_file.name.replace('.p7m', '')}.zip"
-        with zipfile.ZipFile(zip_file_path, "w", zipfile.ZIP_DEFLATED) as zipf:
-            for root, _, files in os.walk(extracted_dir):
-                for file in files:
-                    file_path = Path(root) / file
-                    zipf.write(file_path, file_path.relative_to(extracted_dir))
-
-        # Infine mostro il pulsante di download per l'utente
-        with open(zip_file_path, "rb") as f:
-            st.download_button(
-                label="Scarica lo zip con il contenuto estratto",
-                data=f,
-                file_name=zip_file_path.name,
-                mime="application/zip"
-            )
+    # Mostro un unico pulsante per scaricare lo ZIP con tutto il contenuto
+    with open(zip_file_path, "rb") as f:
+        st.download_button(
+            label="Scarica un unico zip con tutte le cartelle estratte",
+            data=f,
+            file_name=zip_file_path.name,
+            mime="application/zip"
+        )
