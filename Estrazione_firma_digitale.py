@@ -21,8 +21,8 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> Path | None
     """
     Estrae il contenuto di un file .p7m (CAdES/CMS) usando openssl cms.
     - p7m_file_path: Path al file .p7m da estrarre
-    - output_dir: Path alla directory dove salvare il file estratto (payload)
-    Ritorna il Path del payload estratto (senza estensione), oppure None se c'è un errore.
+    - output_dir: Path alla directory dove salvare il payload estratto (senza estensione)
+    Ritorna il Path del payload estratto, oppure None se c'è un errore.
     """
     payload_filename = p7m_file_path.stem  # nome senza ".p7m"
     output_file = output_dir / payload_filename
@@ -48,8 +48,8 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> Path | None
 def recursive_unpack(directory: Path):
     """
     Cerca ricorsivamente all’interno di 'directory' tutti i file .zip o .tar*,
-    e li estrae in una sottocartella con lo stesso nome del file (senza estensione),
-    quindi elimina l’archivio originale e ripete finché non rimangono più archivi.
+    li estrae in una sottocartella con lo stesso nome del file (senza estensione),
+    elimina l’archivio originale e ripete finché non rimangono più archivi.
     """
     for archive_path in directory.rglob("*"):
         if not archive_path.is_file():
@@ -63,7 +63,6 @@ def recursive_unpack(directory: Path):
                 with zipfile.ZipFile(archive_path, "r") as zf:
                     zf.extractall(extract_folder)
                 archive_path.unlink()
-                # Dopo aver estratto questo archivio, riparti da capo
                 return recursive_unpack(directory)
             except zipfile.BadZipFile:
                 continue
@@ -80,10 +79,20 @@ def recursive_unpack(directory: Path):
         except tarfile.TarError:
             continue
 
-    # Se non ha trovato più archivi, esce
-    return
+    return  # non ci sono più archivi da scompattare
 
-# --- Pulsante di upload (senza filtro “type”, controlliamo in codice) ------
+# --- Input per il nome del file ZIP di output --------------------------------
+output_name = st.text_input(
+    "Nome del file ZIP di output (includi “.zip” o sarà aggiunto automaticamente):",
+    value="all_extracted.zip"
+)
+# Se l'utente non ha inserito ".zip" alla fine, lo aggiungiamo:
+if output_name.strip().lower().endswith(".zip"):
+    output_filename = output_name.strip()
+else:
+    output_filename = output_name.strip() + ".zip"
+
+# --- Pulsante di upload (senza filtro “type”, controlliamo in codice) -------
 uploaded_files = st.file_uploader(
     "Carica uno o più file .p7m o archivi .zip contenenti .p7m",
     accept_multiple_files=True
@@ -149,7 +158,7 @@ if uploaded_files:
         elif suffix == ".p7m":
             st.write(f"🔄 Rilevato file .p7m: {filename}")
             p7m_stem = Path(filename).stem
-            # Creo una cartella con il nome del p7m (senza .p7m)
+            # Creo una cartella con il nome del .p7m (senza .p7m)
             file_folder = root_temp / p7m_stem
             file_folder.mkdir(parents=True, exist_ok=True)
 
@@ -172,22 +181,23 @@ if uploaded_files:
         else:
             st.warning(f"Ignoro «{filename}»: estensione non supportata ({suffix}).")
 
-    # --- Costruzione dello ZIP finale mantenendo tutta la struttura -----------
-    zip_file_path = root_temp / "all_extracted.zip"
+    # --- Costruzione dello ZIP finale mantenendo la struttura sul disco --------
+    zip_file_path = root_temp / output_filename
     with zipfile.ZipFile(zip_file_path, "w", zipfile.ZIP_DEFLATED) as zipf:
         for root, _, files in os.walk(root_temp):
             for file in files:
-                if file == "all_extracted.zip":
+                # Evitiamo di includere il file ZIP di output all’interno di sé stesso
+                if file == output_filename:
                     continue
                 file_path = Path(root) / file
                 rel_path = file_path.relative_to(root_temp)
                 zipf.write(file_path, rel_path)
 
-    # Pulsante per scaricare il .zip finale
+    # Pulsante per scaricare il .zip finale con nome personalizzato
     with open(zip_file_path, "rb") as f:
         st.download_button(
-            label="Scarica un unico zip con tutte le cartelle estratte",
+            label="Scarica il file ZIP con tutte le estrazioni",
             data=f,
-            file_name=zip_file_path.name,
+            file_name=output_filename,
             mime="application/zip"
         )
