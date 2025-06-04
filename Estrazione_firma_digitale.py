@@ -44,7 +44,7 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> Path | None
 
     return output_file
 
-# --- Funzione ricorsiva per estrarre ZIP/TAR “a matrioška” -----------------
+# --- Funzione ricorsiva per estrarre ZIP/TAR “a matrioska” -----------------
 def recursive_unpack(directory: Path):
     """
     Cerca ricorsivamente all’interno di 'directory' tutti i file .zip o .tar*,
@@ -63,10 +63,9 @@ def recursive_unpack(directory: Path):
                 with zipfile.ZipFile(archive_path, "r") as zf:
                     zf.extractall(extract_folder)
                 archive_path.unlink()
-                # Dopo aver estratto questo archive, riparto da capo sulla cartella principale
+                # Dopo aver estratto questo archivio, riparti da capo sulla directory principale
                 return recursive_unpack(directory)
             except zipfile.BadZipFile:
-                # Se non è un zip valido, lo ignoro
                 continue
 
         # TAR (tar, tar.gz, tar.bz2, tar.xz, ecc.)
@@ -86,7 +85,7 @@ def recursive_unpack(directory: Path):
 
 # --- Pulsante di upload (senza filtro “type”, controlliamo in codice) ------
 uploaded_files = st.file_uploader(
-    "Carica uno o più file .p7m o un file .zip contenente .p7m",
+    "Carica uno o più file .p7m o archivi .zip contenenti .p7m",
     accept_multiple_files=True
 )
 
@@ -100,6 +99,9 @@ if uploaded_files:
 
         if suffix == ".zip":
             st.write(f"🔄 Rilevato file ZIP: {filename}")
+            zip_input_stem = Path(filename).stem
+            zip_folder = root_temp / zip_input_stem
+            zip_folder.mkdir(parents=True, exist_ok=True)
 
             # 1) Salvo lo ZIP caricato su disco
             zip_temp_dir = Path(tempfile.mkdtemp(prefix="zip_unpack_"))
@@ -118,15 +120,16 @@ if uploaded_files:
 
             # 3) Per ogni .p7m trovato dentro lo ZIP, lancio il processo di estrazione
             for p7m_path in zip_temp_dir.rglob("*.p7m"):
-                stem = p7m_path.stem
-                st.write(f"· Trovato .p7m dentro ZIP: {p7m_path.name}")
+                p7m_name = p7m_path.name
+                p7m_stem = p7m_path.stem
+                st.write(f"· Trovato .p7m dentro ZIP «{filename}»: {p7m_name}")
 
-                # Creo la cartella dedicata per questo .p7m dentro root_temp
-                file_dir = root_temp / stem
+                # Creo la cartella dedicata per questo .p7m dentro la cartella del ZIP
+                file_dir = zip_folder / p7m_stem
                 file_dir.mkdir(parents=True, exist_ok=True)
 
                 # Copio il .p7m nella sua cartella
-                p7m_copy_path = file_dir / p7m_path.name
+                p7m_copy_path = file_dir / p7m_name
                 shutil.copy2(p7m_path, p7m_copy_path)
 
                 # Creo il subfolder "estratto"
@@ -146,10 +149,10 @@ if uploaded_files:
 
         elif suffix == ".p7m":
             st.write(f"🔄 Rilevato file .p7m: {filename}")
-            stem = Path(filename).stem
+            p7m_stem = Path(filename).stem
 
-            # Creo la cartella dedicata per questo .p7m dentro root_temp
-            file_dir = root_temp / stem
+            # Creo la cartella dedicata per questo .p7m direttamente in root_temp
+            file_dir = root_temp / p7m_stem
             file_dir.mkdir(parents=True, exist_ok=True)
 
             # Salvo il .p7m su disco
@@ -172,8 +175,12 @@ if uploaded_files:
         else:
             st.warning(f"Ignoro «{filename}»: estensione non supportata ({suffix}).")
 
-    # --- A questo punto root_temp contiene tutte le cartelle per ogni .p7m (o p7m dentro ZIP) ---
-    # Creiamo il file ZIP aggregato, mantenendo la struttura relativa a root_temp
+    # --- A questo punto root_temp contiene:
+    #     - Una cartella per ciascun ZIP caricato, col nome del file ZIP (senza .zip),
+    #       al cui interno ci sono sottocartelle per ogni .p7m trovata dentro quello ZIP.
+    #     - Una cartella per ogni .p7m caricato direttamente, col nome del .p7m (senza .p7m).
+    #
+    # Creiamo il file ZIP aggregato, mantenendo la struttura relativa a root_temp:
     zip_file_path = root_temp / "all_extracted.zip"
     with zipfile.ZipFile(zip_file_path, "w", zipfile.ZIP_DEFLATED) as zipf:
         for root, _, files in os.walk(root_temp):
@@ -181,7 +188,6 @@ if uploaded_files:
                 if file == "all_extracted.zip":
                     continue
                 file_path = Path(root) / file
-                # Qui usiamo relative_to(root_temp) per mantenere esattamente la struttura
                 rel_path = file_path.relative_to(root_temp)
                 zipf.write(file_path, rel_path)
 
