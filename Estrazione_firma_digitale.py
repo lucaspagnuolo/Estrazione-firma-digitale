@@ -4,8 +4,8 @@ import zipfile
 import tarfile
 import subprocess
 import tempfile
-import base64
 from pathlib import Path
+from PIL import Image
 
 # Layout con logo a destra
 col1, col2 = st.columns([8, 1])
@@ -14,11 +14,16 @@ with col1:
 with col2:
     logo = Image.open("img/Consip_Logo.png")  # Percorso relativo nella repo
     st.image(logo, width=120)
-def get_image_base64(image_path):
-    with open(image_path, "rb") as image_file:
-        return base64.b64encode(image_file.read()).decode()
 
 def extract_signed_content(p7m_file_path, output_dir):
+    """
+    Estrae il contenuto di un file .p7m (CAdES/CMS) usando openssl cms.
+    Se il payload estratto è un archivio (ZIP o TAR), non lo scompatta qui: 
+    questa funzione si limita a scrivere il payload grezzo in 'output_dir'.
+    - p7m_file_path: Path al file .p7m da estrarre
+    - output_dir: Path alla directory dove salvare il file estratto (payload)
+    Ritorna il Path del file estratto (payload), oppure None in caso di errore.
+    """
     payload_filename = p7m_file_path.stem
     output_file = output_dir / payload_filename
 
@@ -40,6 +45,11 @@ def extract_signed_content(p7m_file_path, output_dir):
     return output_file
 
 def unpack_inner_archive(payload_path, destination_dir):
+    """
+    Se 'payload_path' è un archivio ZIP o TAR, lo scompatta dentro 'destination_dir'.
+    Ritorna True se è stato un archivio e l'abbiamo scompattato, False altrimenti.
+    Dopo lo scompattamento, elimina l'archivio originale.
+    """
     if zipfile.is_zipfile(payload_path):
         with zipfile.ZipFile(payload_path, 'r') as zf:
             zf.extractall(destination_dir)
@@ -57,25 +67,6 @@ def unpack_inner_archive(payload_path, destination_dir):
 
     return False
 
-# === TITOLO E LOGO ===
-st.set_page_config(layout="wide")  # Opzionale: per più spazio
-
-st.title("Estrattore di file firmati digitalmente (CAdES)")
-
-# Inserisce il logo in alto a destra
-logo_path = Path(r"C:\Users\luca.spagnuolo.ext\Downloads\Consip_Logo.png")
-if logo_path.exists():
-    logo_base64 = get_image_base64(logo_path)
-    st.markdown(
-        f"""
-        <div style="position: absolute; top: 10px; right: 10px;">
-            <img src="data:image/png;base64,{logo_base64}" width="120"/>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-# === UPLOADER ===
 uploaded_files = st.file_uploader(
     "Carica uno o più file .p7m",
     accept_multiple_files=True,
