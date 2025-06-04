@@ -7,6 +7,13 @@ import tempfile
 import base64
 from pathlib import Path
 
+# Layout con logo a destra
+col1, col2 = st.columns([8, 1])
+with col1:
+    st.title("Estrattore di file firmati digitalmente (CAdES)")
+with col2:
+    logo = Image.open("img/Consip_Logo.png")  # Percorso relativo nella repo
+    st.image(logo, width=120)
 def get_image_base64(image_path):
     with open(image_path, "rb") as image_file:
         return base64.b64encode(image_file.read()).decode()
