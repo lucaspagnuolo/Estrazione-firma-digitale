@@ -22,9 +22,9 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> Path | None
     Estrae il contenuto di un file .p7m (CAdES/CMS) usando openssl cms.
     - p7m_file_path: Path al file .p7m da estrarre
     - output_dir: Path alla directory dove salvare il file estratto (payload)
-    Ritorna il Path del payload estratto, oppure None se c'è un errore.
+    Ritorna il Path del payload estratto (senza estensione), oppure None se c'è un errore.
     """
-    payload_filename = p7m_file_path.stem
+    payload_filename = p7m_file_path.stem  # nome senza ".p7m"
     output_file = output_dir / payload_filename
 
     result = subprocess.run(
@@ -63,7 +63,7 @@ def recursive_unpack(directory: Path):
                 with zipfile.ZipFile(archive_path, "r") as zf:
                     zf.extractall(extract_folder)
                 archive_path.unlink()
-                # Dopo aver estratto questo archivio, riparti da capo sulla directory principale
+                # Dopo aver estratto questo archivio, riparti da capo
                 return recursive_unpack(directory)
             except zipfile.BadZipFile:
                 continue
@@ -118,31 +118,30 @@ if uploaded_files:
                 shutil.rmtree(zip_temp_dir, ignore_errors=True)
                 continue
 
-            # 3) Per ogni .p7m trovato dentro lo ZIP, lancio il processo di estrazione
+            # 3) Per ogni .p7m dentro lo ZIP, rispettiamo la struttura originaria
             for p7m_path in zip_temp_dir.rglob("*.p7m"):
-                p7m_name = p7m_path.name
-                p7m_stem = p7m_path.stem
-                st.write(f"· Trovato .p7m dentro ZIP «{filename}»: {p7m_name}")
+                # Percorso relativo rispetto alla radice dello ZIP
+                rel_dir = p7m_path.parent.relative_to(zip_temp_dir)
+                st.write(f"· Trovato .p7m dentro ZIP «{filename}» in {rel_dir}: {p7m_path.name}")
 
-                # Creo la cartella dedicata per questo .p7m dentro la cartella del ZIP
-                file_dir = zip_folder / p7m_stem
-                file_dir.mkdir(parents=True, exist_ok=True)
+                # Creo la stessa sottocartella all'interno di zip_folder
+                target_folder = zip_folder / rel_dir
+                target_folder.mkdir(parents=True, exist_ok=True)
 
-                # Copio il .p7m nella sua cartella
-                p7m_copy_path = file_dir / p7m_name
+                # Copio il .p7m in quella cartella
+                p7m_copy_path = target_folder / p7m_path.name
                 shutil.copy2(p7m_path, p7m_copy_path)
 
-                # Creo il subfolder "estratto"
-                extracted_dir = file_dir / "estratto"
-                extracted_dir.mkdir(exist_ok=True)
-
-                # Estraggo il payload firmato
-                payload_path = extract_signed_content(p7m_copy_path, extracted_dir)
+                # Estraggo il payload firmato direttamente in target_folder
+                payload_path = extract_signed_content(p7m_copy_path, target_folder)
                 if not payload_path:
                     continue
 
-                # Estraggo eventuali archivi annidati (ricorsivamente)
-                recursive_unpack(extracted_dir)
+                # Rimuovo il file .p7m originale (per lasciare solo il documento estratto)
+                p7m_copy_path.unlink()
+
+                # Estraggo eventuali archivi annidati all’interno di target_folder
+                recursive_unpack(target_folder)
 
             # 4) Pulisco la cartella temporanea dello ZIP
             shutil.rmtree(zip_temp_dir, ignore_errors=True)
@@ -150,37 +149,30 @@ if uploaded_files:
         elif suffix == ".p7m":
             st.write(f"🔄 Rilevato file .p7m: {filename}")
             p7m_stem = Path(filename).stem
-
-            # Creo la cartella dedicata per questo .p7m direttamente in root_temp
-            file_dir = root_temp / p7m_stem
-            file_dir.mkdir(parents=True, exist_ok=True)
+            # Creo una cartella con il nome del p7m (senza .p7m)
+            file_folder = root_temp / p7m_stem
+            file_folder.mkdir(parents=True, exist_ok=True)
 
             # Salvo il .p7m su disco
-            p7m_file_path = file_dir / filename
+            p7m_file_path = file_folder / filename
             with open(p7m_file_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
 
-            # Creo il subfolder "estratto"
-            extracted_dir = file_dir / "estratto"
-            extracted_dir.mkdir(exist_ok=True)
-
-            # Estraggo il payload firmato
-            payload_path = extract_signed_content(p7m_file_path, extracted_dir)
+            # Estraggo il payload firmato direttamente in file_folder
+            payload_path = extract_signed_content(p7m_file_path, file_folder)
             if not payload_path:
                 continue
 
-            # Estraggo eventuali archivi annidati (ricorsivamente)
-            recursive_unpack(extracted_dir)
+            # Rimuovo il file .p7m originale
+            p7m_file_path.unlink()
+
+            # Estraggo eventuali archivi annidati all’interno di file_folder
+            recursive_unpack(file_folder)
 
         else:
             st.warning(f"Ignoro «{filename}»: estensione non supportata ({suffix}).")
 
-    # --- A questo punto root_temp contiene:
-    #     - Una cartella per ciascun ZIP caricato, col nome del file ZIP (senza .zip),
-    #       al cui interno ci sono sottocartelle per ogni .p7m trovata dentro quello ZIP.
-    #     - Una cartella per ogni .p7m caricato direttamente, col nome del .p7m (senza .p7m).
-    #
-    # Creiamo il file ZIP aggregato, mantenendo la struttura relativa a root_temp:
+    # --- Costruzione dello ZIP finale mantenendo tutta la struttura -----------
     zip_file_path = root_temp / "all_extracted.zip"
     with zipfile.ZipFile(zip_file_path, "w", zipfile.ZIP_DEFLATED) as zipf:
         for root, _, files in os.walk(root_temp):
