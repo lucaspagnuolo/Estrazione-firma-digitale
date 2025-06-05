@@ -15,7 +15,7 @@ with col1:
     st.title("Estrattore di file firmati digitalmente (CAdES)")
 with col2:
     logo = Image.open("img/Consip_Logo.png")
-    st.image(logo, width=120)
+    st.image(logo, width=300)
 
 # --- Funzione che esegue “openssl cms -verify” e legge il certificato -----
 def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path | None, str, bool]:
