@@ -1,7 +1,6 @@
 import streamlit as st
 import os
 import zipfile
-import tarfile
 import subprocess
 import tempfile
 import shutil
@@ -24,6 +23,7 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
     Estrae il contenuto di un file .p7m, estrae il certificato e ritorna:
     (output_file, signer_name, is_valid).
     Se c'è un errore nell’estrazione, restituisce (None, "", False).
+    Alla fine elimina il file .pem per non includerlo nell’output finale.
     """
 
     payload_filename = p7m_file_path.stem
@@ -102,44 +102,44 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
     now = datetime.utcnow()
     is_valid = (not_before <= now <= not_after)
 
+    # Rimuovo il file .pem per non includerlo nell’output
+    try:
+        cert_pem_path.unlink()
+    except FileNotFoundError:
+        pass
+
     return output_file, signer_name, is_valid
 
-# --- Funzione ricorsiva per estrarre ZIP/TAR “a matrioska” -----------------
+# --- Funzione ricorsiva per estrarre solo ZIP “a matrioska” -----------------
 def recursive_unpack(directory: Path):
     """
-    Cerca ricorsivamente all’interno di 'directory' tutti i file .zip o .tar*,
+    Cerca ricorsivamente all’interno di 'directory' tutti i file .zip,
     li estrae in una sottocartella con lo stesso nome del file (senza estensione),
     elimina l’archivio originale e ripete finché non rimangono più archivi.
     """
-    for archive_path in directory.rglob("*"):
+    for archive_path in directory.rglob("*.zip"):
         if not archive_path.is_file():
             continue
 
-        # ZIP
-        if zipfile.is_zipfile(archive_path):
-            try:
-                extract_folder = archive_path.parent / archive_path.stem
-                extract_folder.mkdir(exist_ok=True)
-                with zipfile.ZipFile(archive_path, "r") as zf:
-                    zf.extractall(extract_folder)
-                archive_path.unlink()
-                return recursive_unpack(directory)
-            except zipfile.BadZipFile:
-                continue
-
-        # TAR (tar, tar.gz, tar.bz2, tar.xz, ecc.)
         try:
-            if tarfile.is_tarfile(archive_path):
-                extract_folder = archive_path.parent / archive_path.stem
-                extract_folder.mkdir(exist_ok=True)
-                with tarfile.open(archive_path, "r:*") as tf:
-                    tf.extractall(extract_folder)
-                archive_path.unlink()
-                return recursive_unpack(directory)
-        except tarfile.TarError:
-            continue
+            extract_folder = archive_path.parent / archive_path.stem
 
-    return  # non ci sono più archivi da scompattare
+            # Se esiste un file con lo stesso nome, lo rimuovo
+            if extract_folder.exists() and extract_folder.is_file():
+                extract_folder.unlink()
+
+            # Creo la cartella (se esiste come directory, esist_ok=True la ignora senza errore)
+            extract_folder.mkdir(exist_ok=True)
+
+            with zipfile.ZipFile(archive_path, "r") as zf:
+                zf.extractall(extract_folder)
+
+            archive_path.unlink()
+            # Ricorsione su cartella appena estratta
+            recursive_unpack(extract_folder)
+
+        except Exception as e:
+            st.warning(f"Errore estraendo {archive_path.name}: {e}")
 
 # --- Input per il nome del file ZIP di output --------------------------------
 output_name = st.text_input(
@@ -210,7 +210,7 @@ if uploaded_files:
                 # Rimuovo il file .p7m originale (per lasciare solo il documento estratto)
                 p7m_copy_path.unlink()
 
-                # Estrazione archivI annidati nel payload
+                # Estrazione archivi annidati nel payload
                 recursive_unpack(target_folder)
 
                 # 5) Mostro in UI il nome del firmatario e stato firma
@@ -229,26 +229,26 @@ if uploaded_files:
 
         elif suffix == ".p7m":
             st.write(f"🔄 Rilevato file .p7m: {filename}")
-            p7m_stem = Path(filename).stem
-            # Creo una cartella con il nome del .p7m (senza .p7m)
-            file_folder = root_temp / p7m_stem
-            file_folder.mkdir(parents=True, exist_ok=True)
 
-            # Salvo il .p7m su disco
-            p7m_file_path = file_folder / filename
+            # Salvo temporaneamente il .p7m su disco dentro una cartella temporanea
+            temp_dir = Path(tempfile.mkdtemp(prefix="p7m_unpack_"))
+            p7m_file_path = temp_dir / filename
             with open(p7m_file_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
 
             # Estraggo payload, certificato e verifico firmatario
-            payload_path, signer_name, firma_ok = extract_signed_content(p7m_file_path, file_folder)
+            # Salvo direttamente in root_temp in modo che il payload sia nella radice dell'output
+            payload_path, signer_name, firma_ok = extract_signed_content(p7m_file_path, root_temp)
             if not payload_path:
+                shutil.rmtree(temp_dir, ignore_errors=True)
                 continue
 
-            # Rimuovo il file .p7m originale
+            # Rimuovo il file .p7m originale dalla temp_dir
             p7m_file_path.unlink()
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
-            # Estrazione archivi annidati nel payload
-            recursive_unpack(file_folder)
+            # Estrazione archivi annidati nel payload (nella radice)
+            recursive_unpack(root_temp)
 
             # Mostro in UI il nome del firmatario e stato firma
             colx, coly = st.columns([4, 1])
@@ -271,6 +271,9 @@ if uploaded_files:
             for file in files:
                 # Evitiamo di includere il file ZIP di output all’interno di sé stesso
                 if file == output_filename:
+                    continue
+                # Saltiamo i file .pem
+                if Path(file).suffix.lower() == ".pem":
                     continue
                 file_path = Path(root) / file
                 rel_path = file_path.relative_to(root_temp)
