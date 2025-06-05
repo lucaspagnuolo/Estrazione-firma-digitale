@@ -115,10 +115,11 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
 def recursive_unpack_and_flatten(directory: Path):
     """
     Per ogni file “*.zip” in modo ricorsivo sotto `directory`, estrae
-    in una cartella con lo stesso nome (senza .zip), poi:
+    in una cartella con lo stesso nome (ma senza il suffisso “zip”, se presente),
+    poi:
      - se quella cartella contiene esattamente UNA sottocartella e NESSUN file,
-       ne “appiattisce” il contenuto (cioè sposta le sotto‐carte nella cartella padre),
-       eliminando quindi un livello di directory inutile.
+       ne “appiattisce” il contenuto (cioè sposta le sotto‐carte nella cartella
+       padre), eliminando quindi un livello di directory inutile.
      - elimina l’archivio .zip di partenza.
     Ripete finché non rimangano più *.zip in ogni sottocartella.
     """
@@ -127,7 +128,13 @@ def recursive_unpack_and_flatten(directory: Path):
             continue
 
         parent_folder = archive_path.parent
-        extract_folder = parent_folder / archive_path.stem
+
+        # Se il nome finisce per “zip”, tolgo quel suffisso per la cartella estrazione
+        raw_name = archive_path.stem
+        if raw_name.lower().endswith("zip"):
+            raw_name = raw_name[:-3]
+
+        extract_folder = parent_folder / raw_name
 
         # Se esiste un file con lo stesso nome, lo elimino
         if extract_folder.exists() and extract_folder.is_file():
@@ -148,9 +155,8 @@ def recursive_unpack_and_flatten(directory: Path):
         # Rimuovo il .zip originale
         archive_path.unlink(missing_ok=True)
 
-        # *** Flatten se serve ***
-        # Se dentro “extract_folder” c’è una sola cartella e nessun file,
-        # sposto i contenuti di quella sottocartella direttamente in “extract_folder”.
+        # *** Flatten automatico: se dentro “extract_folder” c’è UNA sola sottocartella
+        # e nessun file, sposto tutto verso l’alto e cancel­lo la subdir ***
         items = list(extract_folder.iterdir())
         if len(items) == 1 and items[0].is_dir():
             lone_sub = items[0]
@@ -159,57 +165,55 @@ def recursive_unpack_and_flatten(directory: Path):
             # Elimino la sottocartella ormai vuota
             lone_sub.rmdir()
 
-        # Dopo averlo scompattato e appiattito, ripeto (ricorsione)
+        # Dopo aver scompattato e appiattito, ricorsione
         recursive_unpack_and_flatten(extract_folder)
 
 
-# --- Procedura principale: processa ogni directory radice alla ricerca di .p7m ---
+# --- Procedura principale: processa ogni directory cercando .p7m ----------
 def process_directory_for_p7m(directory: Path, log_root: str):
     """
     Cerca in `directory` tutti i file “*.p7m” (a ogni livello) e, per ognuno:
      1) chiama extract_signed_content su quel file, mettendo il payload
         (pdf o zip) nella stessa cartella del .p7m.
-     2) elimina il .p7m original
-     3) se il payload diventato .zip (o già con .zip) esiste, lo scompatta
-        con recursive_unpack_and_flatten (dentro quella cartella),
-        e poi rilancia process_directory_for_p7m su quella sottocartella,
-        in modo da processare eventuali .p7m nidificati ancora più in fondo.
-     4) logga (in UI) il firmatario e lo stato di validità.
+     2) elimina il .p7m originale
+     3) se il payload risultante era un .zip, lo scompatta
+        con recursive_unpack_and_flatten() nella sua cartella
+        e poi richiama ricorsivamente process_directory_for_p7m()
+        dentro quel nuovo folder, in modo da processare eventuali .p7m
+        ancora più in profondità.
+     4) logga in UI chi ha firmato e lo stato di validità.
     """
-    # Scorro tutti i .p7m (snapshot iniziale, perché li eliminerò man mano)
+    # Itero su un elenco statico di .p7m (perché li cancello man mano)
     for p7m_path in list(directory.rglob("*.p7m")):
-        # Calcolo percorso relativo per mostrare in UI
         rel = p7m_path.relative_to(directory)
         st.write(f"{log_root} · Trovato .p7m in **{rel.parent}**: {p7m_path.name}")
 
-        # Estraggo certificato e payload
         payload_path, signer_name, firma_ok = extract_signed_content(p7m_path, p7m_path.parent)
         if not payload_path:
-            # Se estrazione fallita, salto
             continue
 
-        # Rimuovo il file .p7m originale
+        # Rimuovo il .p7m
         try:
             p7m_path.unlink()
         except:
             pass
 
-        # Se il payload è un .zip (o è stato rinominato .zip), lo scompatto qui
+        # Se il payload estratto è un .zip, lo scompatto e richiamo ricorsione
         if payload_path.suffix.lower() == ".zip":
-            # Scompatta e appiattisci
             recursive_unpack_and_flatten(payload_path.parent)
-            # Rilancia process_directory_for_p7m dentro la sottocartella estratta,
-            # perché potrebbero esserci altri .p7m dentro
+
+            # Dopo avere estratto, provo a processare eventuali .p7m dentro la nuova subdir
             nuova_cartella = payload_path.parent / payload_path.stem
             if nuova_cartella.exists() and nuova_cartella.is_dir():
                 process_directory_for_p7m(nuova_cartella, log_root + "  ")
-            # Poi rimuovo l’eventuale archivio .zip rimasto
+
+            # Infine rimuovo l’archivio .zip residuo
             try:
                 payload_path.unlink()
             except:
                 pass
 
-        # Mostro in UI chi ha firmato e stato firma
+        # Log in UI
         colx, coly = st.columns([4, 1])
         with colx:
             st.write(f"  – File estratto: **{payload_path.stem + payload_path.suffix}**")
@@ -221,7 +225,7 @@ def process_directory_for_p7m(directory: Path, log_root: str):
                 st.error("Firma NON valida ⚠️")
 
 
-# --- Streamlit: upload multiplo, creazione cartelle temporanee -----------
+# --- Streamlit: upload multiplo, creazione cartelle temporanee -------------
 output_name = st.text_input(
     "Nome del file ZIP di output (includi “.zip” o sarà aggiunto automaticamente):",
     value="all_extracted.zip"
@@ -262,22 +266,22 @@ if uploaded_files:
                 shutil.rmtree(temp_zip_dir, ignore_errors=True)
                 continue
 
-            # 3) Determino se temp_zip_dir contiene una singola cartella “principale”
+            # 3) Se c'è una sola cartella principale, la uso; altrimenti, rimango su temp_zip_dir
             items = [p for p in temp_zip_dir.iterdir() if p != zip_path]
             if len(items) == 1 and items[0].is_dir():
                 base_dir = items[0]
             else:
                 base_dir = temp_zip_dir
 
-            # 4) Scompattiamo tutti gli ZIP annidati e appiattiamo
+            # 4) Scompattiamo tutti gli ZIP annidati (e appiattiamo le cartelle)
             recursive_unpack_and_flatten(base_dir)
 
-            # 5) Copiamo TUTTO (cartelle e file) da base_dir → root_temp/<nome_base_zip>/
+            # 5) Copiamo TUTTO da base_dir → root_temp/<nome_base_zip>/
             nome_base = zip_path.stem
             target_root_for_this_zip = root_temp / nome_base
             shutil.copytree(base_dir, target_root_for_this_zip)
 
-            # 6) Rilanciamo il processing dei .p7m a partire da target_root_for_this_zip
+            # 6) Processiamo eventuali .p7m rimasti (a ogni livello) dentro target_root_for_this_zip
             process_directory_for_p7m(target_root_for_this_zip, f"{nome_base}")
 
             # 7) Rimuovo la cartella temporanea usata
@@ -292,7 +296,7 @@ if uploaded_files:
             with open(p7m_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
 
-            # 2) Lo estraggo direttamente in root_temp (flat)
+            # 2) Estraggo direttamente in root_temp (flat)
             payload_path, signer_name, firma_ok = extract_signed_content(p7m_path, root_temp)
             if not payload_path:
                 shutil.rmtree(temp_single, ignore_errors=True)
@@ -304,16 +308,12 @@ if uploaded_files:
             except:
                 pass
 
-            # 4) Se è un ZIP, lo estraggo con recursive_unpack_and_flatten su root_temp
+            # 4) Se è un ZIP, estraggo e appiattisco in root_temp e poi processiamo eventuali .p7m annidati
             if payload_path.suffix.lower() == ".zip":
                 recursive_unpack_and_flatten(root_temp)
-                # E rilancio il processing di eventuali .p7m dentro le nuove cartelle
-                # (potrebbero essercene di molto nidificati)
                 for subd in root_temp.iterdir():
                     if subd.is_dir():
                         process_directory_for_p7m(subd, subd.name)
-
-                # Rimuovo l’archivio .zip residuo
                 try:
                     payload_path.unlink()
                 except:
