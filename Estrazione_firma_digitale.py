@@ -23,8 +23,8 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
     Estrae il contenuto di un file .p7m, estrae il certificato e ritorna:
     (output_file, signer_name, is_valid).
     Se c'è un errore nell’estrazione, restituisce (None, "", False).
-    Alla fine elimina il file .pem per non includerlo nell’output finale.
     """
+
     payload_filename = p7m_file_path.stem
     output_file = output_dir / payload_filename
 
@@ -101,12 +101,6 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
     now = datetime.utcnow()
     is_valid = (not_before <= now <= not_after)
 
-    # Rimuovo il file .pem per non includerlo nell’output
-    try:
-        cert_pem_path.unlink()
-    except FileNotFoundError:
-        pass
-
     return output_file, signer_name, is_valid
 
 # --- Funzione ricorsiva per estrarre solo ZIP “a matrioska” -----------------
@@ -134,7 +128,7 @@ def recursive_unpack(directory: Path):
                 zf.extractall(extract_folder)
 
             archive_path.unlink()
-            # Ricorsione sulla cartella appena estratta
+            # Ricorsione su cartella appena estratta
             recursive_unpack(extract_folder)
 
         except Exception as e:
@@ -186,10 +180,7 @@ if uploaded_files:
                 shutil.rmtree(zip_temp_dir, ignore_errors=True)
                 continue
 
-            # 3) Estraggo ricorsivamente tutti gli ZIP annidati 
-            recursive_unpack(zip_temp_dir)
-
-            # 4) Per ogni .p7m dentro zip_temp_dir (a qualsiasi profondità), rispettiamo la struttura originaria
+            # 3) Per ogni .p7m dentro lo ZIP, rispettiamo la struttura originaria
             for p7m_path in zip_temp_dir.rglob("*.p7m"):
                 # Percorso relativo rispetto alla radice dello ZIP
                 rel_dir = p7m_path.parent.relative_to(zip_temp_dir)
@@ -203,7 +194,7 @@ if uploaded_files:
                 p7m_copy_path = target_folder / p7m_path.name
                 shutil.copy2(p7m_path, p7m_copy_path)
 
-                # 5) Estraggo payload, certificato e verifico firmatario
+                # 4) Estraggo payload, certificato e verifico firmatario
                 payload_path, signer_name, firma_ok = extract_signed_content(p7m_copy_path, target_folder)
                 if not payload_path:
                     # Se c'è stato errore, passo avanti
@@ -212,10 +203,10 @@ if uploaded_files:
                 # Rimuovo il file .p7m originale (per lasciare solo il documento estratto)
                 p7m_copy_path.unlink()
 
-                # Estrazione archivi annidati nel payload (nella stessa cartella di destinazione)
+                # Estrazione archivi annidati nel payload
                 recursive_unpack(target_folder)
 
-                # 6) Mostro in UI il nome del firmatario e stato firma
+                # 5) Mostro in UI il nome del firmatario e stato firma
                 colx, coly = st.columns([4, 1])
                 with colx:
                     st.write(f"  – File estratto: **{payload_path.name}**")
@@ -226,31 +217,31 @@ if uploaded_files:
                     else:
                         st.error("Firma NON valida ⚠️")
 
-            # 7) Pulisco la cartella temporanea dello ZIP
+            # 6) Pulisco la cartella temporanea dello ZIP
             shutil.rmtree(zip_temp_dir, ignore_errors=True)
 
         elif suffix == ".p7m":
             st.write(f"🔄 Rilevato file .p7m: {filename}")
+            p7m_stem = Path(filename).stem
+            # Creo una cartella con il nome del .p7m (senza .p7m)
+            file_folder = root_temp / p7m_stem
+            file_folder.mkdir(parents=True, exist_ok=True)
 
-            # Salvo temporaneamente il .p7m su disco dentro una cartella temporanea
-            temp_dir = Path(tempfile.mkdtemp(prefix="p7m_unpack_"))
-            p7m_file_path = temp_dir / filename
+            # Salvo il .p7m su disco
+            p7m_file_path = file_folder / filename
             with open(p7m_file_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
 
             # Estraggo payload, certificato e verifico firmatario
-            # Salvo direttamente in root_temp in modo che il payload sia nella radice dell'output
-            payload_path, signer_name, firma_ok = extract_signed_content(p7m_file_path, root_temp)
+            payload_path, signer_name, firma_ok = extract_signed_content(p7m_file_path, file_folder)
             if not payload_path:
-                shutil.rmtree(temp_dir, ignore_errors=True)
                 continue
 
-            # Rimuovo il file .p7m originale dalla temp_dir
+            # Rimuovo il file .p7m originale
             p7m_file_path.unlink()
-            shutil.rmtree(temp_dir, ignore_errors=True)
 
-            # Estrazione archivi annidati nel payload (nella radice)
-            recursive_unpack(root_temp)
+            # Estrazione archivi annidati nel payload
+            recursive_unpack(file_folder)
 
             # Mostro in UI il nome del firmatario e stato firma
             colx, coly = st.columns([4, 1])
@@ -273,9 +264,6 @@ if uploaded_files:
             for file in files:
                 # Evitiamo di includere il file ZIP di output all’interno di sé stesso
                 if file == output_filename:
-                    continue
-                # Saltiamo i file .pem
-                if Path(file).suffix.lower() == ".pem":
                     continue
                 file_path = Path(root) / file
                 rel_path = file_path.relative_to(root_temp)
