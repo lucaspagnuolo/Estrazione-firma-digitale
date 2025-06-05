@@ -10,7 +10,7 @@ import re
 from PIL import Image
 
 # --- Layout con logo a destra ---------------------------------------------
-col1, col2 = st.columns([7, 2])
+col1, col2 = st.columns([7, 3])
 with col1:
     st.title("Estrattore di file firmati digitalmente (CAdES)")
 with col2:
