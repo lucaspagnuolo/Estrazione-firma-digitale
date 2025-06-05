@@ -25,7 +25,6 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
     Se c'è un errore nell’estrazione, restituisce (None, "", False).
     Alla fine elimina il file .pem per non includerlo nell’output finale.
     """
-
     payload_filename = p7m_file_path.stem
     output_file = output_dir / payload_filename
 
@@ -135,7 +134,7 @@ def recursive_unpack(directory: Path):
                 zf.extractall(extract_folder)
 
             archive_path.unlink()
-            # Ricorsione su cartella appena estratta
+            # Ricorsione sulla cartella appena estratta
             recursive_unpack(extract_folder)
 
         except Exception as e:
@@ -187,7 +186,10 @@ if uploaded_files:
                 shutil.rmtree(zip_temp_dir, ignore_errors=True)
                 continue
 
-            # 3) Per ogni .p7m dentro lo ZIP, rispettiamo la struttura originaria
+            # 3) Estraggo ricorsivamente tutti gli ZIP annidati 
+            recursive_unpack(zip_temp_dir)
+
+            # 4) Per ogni .p7m dentro zip_temp_dir (a qualsiasi profondità), rispettiamo la struttura originaria
             for p7m_path in zip_temp_dir.rglob("*.p7m"):
                 # Percorso relativo rispetto alla radice dello ZIP
                 rel_dir = p7m_path.parent.relative_to(zip_temp_dir)
@@ -201,7 +203,7 @@ if uploaded_files:
                 p7m_copy_path = target_folder / p7m_path.name
                 shutil.copy2(p7m_path, p7m_copy_path)
 
-                # 4) Estraggo payload, certificato e verifico firmatario
+                # 5) Estraggo payload, certificato e verifico firmatario
                 payload_path, signer_name, firma_ok = extract_signed_content(p7m_copy_path, target_folder)
                 if not payload_path:
                     # Se c'è stato errore, passo avanti
@@ -210,10 +212,10 @@ if uploaded_files:
                 # Rimuovo il file .p7m originale (per lasciare solo il documento estratto)
                 p7m_copy_path.unlink()
 
-                # Estrazione archivi annidati nel payload
+                # Estrazione archivi annidati nel payload (nella stessa cartella di destinazione)
                 recursive_unpack(target_folder)
 
-                # 5) Mostro in UI il nome del firmatario e stato firma
+                # 6) Mostro in UI il nome del firmatario e stato firma
                 colx, coly = st.columns([4, 1])
                 with colx:
                     st.write(f"  – File estratto: **{payload_path.name}**")
@@ -224,7 +226,7 @@ if uploaded_files:
                     else:
                         st.error("Firma NON valida ⚠️")
 
-            # 6) Pulisco la cartella temporanea dello ZIP
+            # 7) Pulisco la cartella temporanea dello ZIP
             shutil.rmtree(zip_temp_dir, ignore_errors=True)
 
         elif suffix == ".p7m":
