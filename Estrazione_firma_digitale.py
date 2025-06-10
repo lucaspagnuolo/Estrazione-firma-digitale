@@ -80,7 +80,7 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
 
     # Estraggo subject e controllo validità
     lines = res3.stdout.splitlines()
-    subject_line = "\n".join(lines)  # Unisci le linee in una singola stringa
+    subject_line = "\n".join(lines)
     candidato_rdn = ["CN", "SN", "UID", "emailAddress", "SERIALNUMBER"]
     signer_name = "Sconosciuto"
     for rdn in candidato_rdn:
