@@ -409,8 +409,7 @@ if uploaded_files:
         else:
             st.warning(f"Ignoro «{nome}»: estensione non supportata ({suff}).")
 
-
-    # --- Creo lo ZIP di output con tutta la struttura “pulita” -------------
+    # --- Creo lo ZIP di output con tutta la struttura “pulita” -------------
     zip_out_path = root_temp / output_filename
     with zipfile.ZipFile(zip_out_path, "w", zipfile.ZIP_DEFLATED) as zipf:
         for root, _, files in os.walk(root_temp):
