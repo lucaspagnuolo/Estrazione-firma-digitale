@@ -12,7 +12,7 @@ from PIL import Image
 # --- Layout con logo a destra ---------------------------------------------
 col1, col2 = st.columns([7, 3])
 with col1:
-    st.title("Estrattore di file firmati digitalamente (CAdES)")
+    st.title("Estrattore di file firmati digitalmente (CAdES)")
 with col2:
     logo = Image.open("img/Consip_Logo.png")
     st.image(logo, width=300)
@@ -110,7 +110,6 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
 
     return output_file, signer_name, is_valid
 
-
 # --- Funzione ricorsiva che scompatta tutti gli ZIP e appiattisce cartelle ---
 def recursive_unpack_and_flatten(directory: Path):
     """
@@ -161,6 +160,27 @@ def recursive_unpack_and_flatten(directory: Path):
         # Ricorsione
         recursive_unpack_and_flatten(extract_folder)
 
+# --- Funzione per confrontare due cartelle e verificare se contengono gli stessi file ---
+def compare_directories(dir1: Path, dir2: Path) -> bool:
+    """
+    Confronta due cartelle per verificare se contengono gli stessi file (per nome ed estensione).
+    """
+    files1 = sorted([f.name for f in dir1.iterdir() if f.is_file()])
+    files2 = sorted([f.name for f in dir2.iterdir() if f.is_file()])
+    return files1 == files2
+
+# --- Funzione per rimuovere cartelle duplicate ---
+def remove_duplicate_folders(root_dir: Path):
+    """
+    Scorre tutte le cartelle e, se trova una sottocartella con lo stesso nome e contenuto
+    della cartella padre, la elimina.
+    """
+    for dirpath, dirnames, filenames in os.walk(root_dir):
+        for dirname in dirnames:
+            parent_dir = Path(dirpath)
+            child_dir = parent_dir / dirname
+            if compare_directories(parent_dir, child_dir):
+                shutil.rmtree(child_dir)
 
 # --- Procedura principale: processa ogni directory cercando .p7m ----------
 def process_directory_for_p7m(directory: Path, log_root: str):
@@ -217,7 +237,6 @@ def process_directory_for_p7m(directory: Path, log_root: str):
             else:
                 st.error("Firma NON valida ⚠️")
 
-
 # --- Funzione di “cleanup” per rimuovere directory con soli .p7m non processati ---
 def cleanup_unprocessed_p7m_dirs(root_dir: Path):
     """
@@ -246,7 +265,6 @@ def cleanup_unprocessed_p7m_dirs(root_dir: Path):
             except:
                 pass
 
-
 # --- Nuova funzione di “cleanup” per rimuovere cartelle che terminano con “zip” ---
 # se esiste già la stessa cartella senza “zip” (evita doppioni)
 def cleanup_extra_zip_named_dirs(root_dir: Path):
@@ -268,32 +286,6 @@ def cleanup_extra_zip_named_dirs(root_dir: Path):
             if sibling.exists() and sibling.is_dir():
                 # Rimuovo completamente la cartella “d” (che terminava in “zip”)
                 shutil.rmtree(d, ignore_errors=True)
-
-
-# --- Funzione per rimuovere cartelle duplicate con lo stesso contenuto ---
-def remove_duplicate_folders(root_dir: Path):
-    """
-    Scorre tutte le directory sotto root_dir. Se trova una directory
-    che contiene un'altra directory con lo stesso nome e contenuto,
-    rimuove la directory interna duplicata.
-    """
-    for dirpath, dirnames, filenames in os.walk(root_dir):
-        for dirname in dirnames:
-            current_dir = Path(dirpath) / dirname
-            sibling_dir = Path(dirpath) / (dirname + "_unzipped")
-            if sibling_dir.exists() and sibling_dir.is_dir():
-                if compare_directories(current_dir, sibling_dir):
-                    shutil.rmtree(sibling_dir, ignore_errors=True)
-
-def compare_directories(dir1: Path, dir2: Path) -> bool:
-    """
-    Confronta due directory per verificare se contengono gli stessi file
-    (stesso nome ed estensione).
-    """
-    files1 = sorted(f.name for f in dir1.iterdir() if f.is_file())
-    files2 = sorted(f.name for f in dir2.iterdir() if f.is_file())
-    return files1 == files2
-
 
 # --- Streamlit: upload multiplo, creazione cartelle temporanee -------------
 output_name = st.text_input(
@@ -414,9 +406,9 @@ if uploaded_files:
             # 6) Elimino la cartella temporanea
             shutil.rmtree(temp_single, ignore_errors=True)
 
-        
-        else:
+        else:
             st.warning(f"Ignoro «{nome}»: estensione non supportata ({suff}).")
+
 
     # --- Creo lo ZIP di output con tutta la struttura “pulita” -------------
     zip_out_path = root_temp / output_filename
