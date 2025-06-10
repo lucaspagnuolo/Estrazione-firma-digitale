@@ -270,7 +270,7 @@ def cleanup_extra_zip_named_dirs(root_dir: Path):
         if d.name.lower().endswith("zip"):
             sibling_name = d.name[:-3]
             sibling = d.parent / sibling_name
-            if sibling.exists() and sibling is_dir():
+            if sibling.exists() and sibling.is_dir():
                 # Rimuovo completamente la cartella “d” (che terminava in “zip”)
                 shutil.rmtree(d, ignore_errors=True)
 
