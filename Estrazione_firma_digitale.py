@@ -342,3 +342,9 @@ if uploaded_files:
                 zipf.write(file_path, rel_path)
 
     with open(zip_out_path, "rb") as f:
+        st.download_button(
+            label="Scarica il file ZIP con tutte le estrazioni",
+            data=f,
+            file_name=output_filename,
+            mime="application/zip"
+        )
