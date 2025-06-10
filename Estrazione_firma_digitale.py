@@ -408,7 +408,7 @@ if uploaded_files:
                 if file == output_filename:
                     continue
                 file_path = Path(root) / file
-                                rel_path = file_path.relative_to(root_temp)
+                rel_path = file_path.relative_to(root_temp)
                 zipf.write(file_path, rel_path)
 
     # Pulsante per scaricare
