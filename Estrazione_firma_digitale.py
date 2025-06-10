@@ -318,7 +318,11 @@ if uploaded_files:
                 fp = Path(root) / f
                 rp = fp.relative_to(root_temp)
                 zf.write(fp, rp)
-
+    # --- Anteprima del contenuto del ZIP di output ----------------------------
+    st.subheader("Anteprima del contenuto del file ZIP risultante")
+    with zipfile.ZipFile(zip_out, "r") as preview_zf:
+        for entry in preview_zf.namelist():
+            st.write(f"• {entry}")
     # Bottone di download
     with open(zip_out, "rb") as f:
         st.download_button(
