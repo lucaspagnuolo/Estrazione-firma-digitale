@@ -321,9 +321,9 @@ if uploaded_files:
             # 4) Scompattiamo tutti gli ZIP annidati ed appiattiamo le cartelle
             recursive_unpack_and_flatten(base_dir)
 
-            # 5) Copio TUTTO (cartelle e file) da base_dir → root_temp/<nome_base_zip>/
+            # 5) Copio TUTTO (cartelle e file) da base_dir → root_temp/<nome_base_zip>_unzipped/
             nome_base = zip_path.stem
-            target_root_for_this_zip = root_temp / nome_base
+            target_root_for_this_zip = root_temp / f"{nome_base}_unzipped"
             shutil.copytree(base_dir, target_root_for_this_zip)
 
             # 6) Processiamo eventuali .p7m rimasti (a ogni livello) dentro target_root_for_this_zip
