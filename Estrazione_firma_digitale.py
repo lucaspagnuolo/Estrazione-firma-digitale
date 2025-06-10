@@ -144,6 +144,10 @@ def recursive_unpack_and_flatten(directory: Path):
             st.warning(f"Attenzione: «{archive_path.name}» non è un archivio ZIP valido.")
             archive_path.unlink(missing_ok=True)
             continue
+        except EOFError:
+            st.warning(f"Attenzione: «{archive_path.name}» è corrotto e non può essere estratto completamente.")
+            archive_path.unlink(missing_ok=True)
+            continue
 
         # Rimuovo il .zip originale
         archive_path.unlink(missing_ok=True)
@@ -327,6 +331,10 @@ if uploaded_files:
                 st.error(f"Errore: «{nome}» non è un archivio ZIP valido.")
                 shutil.rmtree(temp_zip_dir, ignore_errors=True)
                 continue
+            except EOFError:
+                st.warning(f"Attenzione: «{nome}» è corrotto e non può essere estratto completamente.")
+                shutil.rmtree(temp_zip_dir, ignore_errors=True)
+                continue
 
             # 3) Se temp_zip_dir contiene una sola cartella principale, la uso; altrimenti, rimango su temp_zip_dir
             items = [p for p in temp_zip_dir.iterdir() if p != zip_path]
@@ -398,7 +406,7 @@ if uploaded_files:
                 st.write(f"  – File estratto: **{payload_path.name}**")
                 st.write(f"    Firmato da: **{signer_name}**")
             with coly:
-                if firma_ok:
+                                if firma_ok:
                     st.success("Firma valida ✅")
                 else:
                     st.error("Firma NON valida ⚠️")
@@ -422,7 +430,7 @@ if uploaded_files:
                 file_path = Path(root) / file
                 rel_path = file_path.relative_to(root_temp)
                 zipf.write(file_path, rel_path)
-    
+
     # Pulsante per scaricare
     with open(zip_out_path, "rb") as f:
         st.download_button(
