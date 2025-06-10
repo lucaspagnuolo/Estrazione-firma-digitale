@@ -239,37 +239,44 @@ if uploaded_files:
                     namelist = zf.namelist()
                     st.write(f"DEBUG: Contenuto di {name}: {namelist}")
             
-                    # Trovo tutti i .zip interni
+                    # Trova tutti i .zip interni
                     inner_zips = [n for n in namelist if n.lower().endswith(".zip")]
-                    st.write(f"DEBUG: inner_zips trovati: {inner_zips}")
+                    st.write(f"DEBUG: nested ZIP trovati: {inner_zips}")
             
-                    # Condizione: esattamente un nested ZIP e si trova in cartella con il suo stesso nome
                     if len(inner_zips) == 1:
                         inner = inner_zips[0]
-                        folder = inner.split("/", 1)[0]
-                        st.write(f"DEBUG: cartella principale interna: {folder}")
-                        if inner.startswith(folder + "/"):
-                            st.write(f"DEBUG: Riconosciuto nested ZIP → estraggo solo '{inner}'")
-                            # estraggo e riscrivo lo ZIP interno
-                            data = zf.read(inner)
-                            target_inner = tmp / Path(inner).name
-                            target_inner.write_bytes(data)
-                            # aggiorno zp per riprocessarlo come file ZIP principale
+                        st.write(f"DEBUG: Estraggo solo il nested ZIP interno «{inner}»")
+                        # Leggi i byte dello zip interno
+                        data = zf.read(inner)
+                        target_inner = tmp / Path(inner).name
+                        target_inner.write_bytes(data)
+                        st.write(f"DEBUG: ZIP interno scritto in tmp come «{target_inner.name}»")
+            
+                        # Ora apro e scompatto quello
+                        try:
+                            with zipfile.ZipFile(target_inner, "r") as inner_zf:
+                                inner_zf.extractall(tmp)
+                            st.write(f"DEBUG: Estrazione inner ZIP «{target_inner.name}» riuscita")
+                            # Aggiorno zp al nested ZIP, così recursive_unpack_and_flatten lo vedrà
                             zp = target_inner
-                        else:
-                            st.write("DEBUG: il nested ZIP non è in una sottocartella con lo stesso nome, estrazione standard")
-                            zf.extractall(tmp)
+                        except (zipfile.BadZipFile, EOFError) as e_inner:
+                            st.error(f"Errore estrazione inner ZIP «{target_inner.name}»: {e_inner}")
+                            shutil.rmtree(tmp, ignore_errors=True)
+                            continue
+            
                     else:
                         if not inner_zips:
                             st.write("DEBUG: nessun nested ZIP, estrazione standard")
                         else:
                             st.write("DEBUG: più di un nested ZIP, estrazione standard")
                         zf.extractall(tmp)
+                        st.write(f"DEBUG: Estrazione standard di «{name}» riuscita")
             
             except (zipfile.BadZipFile, EOFError) as e:
                 st.error(f"Errore estrazione ZIP «{name}»: {e}")
                 shutil.rmtree(tmp, ignore_errors=True)
                 continue
+
 
             items = [p for p in tmp.iterdir() if p != zp]
             base = items[0] if len(items) == 1 and items[0].is_dir() else tmp
