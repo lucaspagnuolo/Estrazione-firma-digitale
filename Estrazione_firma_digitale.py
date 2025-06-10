@@ -79,7 +79,7 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
 
     # Estraggo subject e controllo validità
     lines = res3.stdout.splitlines()
-    subject_line = lines[0]
+    subject_line = lines
     candidato_rdn = ["CN", "SN", "UID", "emailAddress", "SERIALNUMBER"]
     signer_name = "Sconosciuto"
     for rdn in candidato_rdn:
@@ -91,8 +91,8 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
     def parse_openssl_date(s: str) -> datetime:
         return datetime.strptime(s.strip(), "%b %d %H:%M:%S %Y %Z")
 
-    not_before = parse_openssl_date(lines[1].split("=", 1)[1])
-    not_after  = parse_openssl_date(lines[2].split("=", 1)[1])
+    not_before = parse_openssl_date(lines.split("=", 1))
+    not_after  = parse_openssl_date(lines.split("=", 1))
     now = datetime.utcnow()
     is_valid = (not_before <= now <= not_after)
 
@@ -112,16 +112,6 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
 
 # --- Funzione ricorsiva che scompatta tutti gli ZIP e appiattisce cartelle ---
 def recursive_unpack_and_flatten(directory: Path):
-    """
-    Per ogni file “*.zip” in modo ricorsivo sotto directory, estrae
-    in una cartella con lo stesso nome del file (senza estensione),
-    poi:
-      - se quella cartella contiene esattamente UNA sottocartella senza altri file,
-        appiattisce il contenuto (sposta le sottocartelle nella cartella padre),
-        eliminando quindi un livello di directory.
-      - elimina l’archivio .zip di partenza.
-    Ripete finché non rimangano più *.zip in ogni livello.
-    """
     for archive_path in list(directory.rglob("*.zip")):
         if not archive_path.is_file():
             continue
@@ -129,39 +119,32 @@ def recursive_unpack_and_flatten(directory: Path):
         parent_folder = archive_path.parent
         extract_folder = parent_folder / f"{archive_path.stem}_unzipped"
 
-        # Se esiste un file con lo stesso nome, lo elimino
         if extract_folder.exists() and extract_folder.is_file():
             extract_folder.unlink()
-
-        # Creo la directory di estrazione
         extract_folder.mkdir(exist_ok=True)
 
-        # Estraggo i contenuti
+        # Estrazione robusta file-per-file
         try:
             with zipfile.ZipFile(archive_path, "r") as zf:
-                zf.extractall(extract_folder)
-        except zipfile.BadZipFile:
-            st.warning(f"Attenzione: «{archive_path.name}» non è un archivio ZIP valido.")
-            archive_path.unlink(missing_ok=True)
-            continue
-        except EOFError:
-            st.warning(f"Attenzione: «{archive_path.name}» è corrotto e non può essere estratto completamente.")
+                for member in zf.infolist():
+                    try:
+                        zf.extract(member, extract_folder)
+                    except (EOFError, zipfile.BadZipFile):
+                        st.warning(f"Attenzione: salto file interno corrotto o non-ZIP «{member.filename}» in «{archive_path.name}».")
+        except Exception as e:
+            st.warning(f"Attenzione: errore estraendo «{archive_path.name}»: {e}")
             archive_path.unlink(missing_ok=True)
             continue
 
-        # Rimuovo il .zip originale
         archive_path.unlink(missing_ok=True)
 
-        # Flatten automatico: se dentro extract_folder c’è UNA sola sottocartella
-        # e nessun file a fianco, sposto tutto verso l’alto e cancello quella subdir
         items = list(extract_folder.iterdir())
-        if len(items) == 1 and items[0].is_dir():
-            lone_sub = items[0]
+        if len(items) == 1 and items.is_dir():
+            lone_sub = items
             for sub_item in lone_sub.iterdir():
                 shutil.move(str(sub_item), str(extract_folder))
             lone_sub.rmdir()
 
-        # Ricorsione
         recursive_unpack_and_flatten(extract_folder)
 
 # --- Funzione per confrontare due cartelle e verificare se contengono gli stessi file ---
@@ -229,7 +212,6 @@ def process_directory_for_p7m(directory: Path, log_root: str):
                 payload_path.unlink()
             except:
                 pass
-
         # Log in UI
         colx, coly = st.columns([4, 1])
         with colx:
@@ -338,11 +320,10 @@ if uploaded_files:
 
             # 3) Se temp_zip_dir contiene una sola cartella principale, la uso; altrimenti, rimango su temp_zip_dir
             items = [p for p in temp_zip_dir.iterdir() if p != zip_path]
-            if len(items) == 1 and items[0].is_dir():
-                base_dir = items[0]
+            if len(items) == 1 and items.is_dir():
+                base_dir = items
             else:
                 base_dir = temp_zip_dir
-
             # 4) Scompattiamo tutti gli ZIP annidati ed appiattiamo le cartelle
             recursive_unpack_and_flatten(base_dir)
 
@@ -377,7 +358,6 @@ if uploaded_files:
             if not payload_path:
                 shutil.rmtree(temp_single, ignore_errors=True)
                 continue
-
             # 3) Rimuovo il .p7m
             try:
                 p7m_path.unlink()
@@ -406,7 +386,7 @@ if uploaded_files:
                 st.write(f"  – File estratto: **{payload_path.name}**")
                 st.write(f"    Firmato da: **{signer_name}**")
             with coly:
-                                if firma_ok:
+                if firma_ok:
                     st.success("Firma valida ✅")
                 else:
                     st.error("Firma NON valida ⚠️")
@@ -428,7 +408,7 @@ if uploaded_files:
                 if file == output_filename:
                     continue
                 file_path = Path(root) / file
-                rel_path = file_path.relative_to(root_temp)
+                                rel_path = file_path.relative_to(root_temp)
                 zipf.write(file_path, rel_path)
 
     # Pulsante per scaricare
