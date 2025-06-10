@@ -405,36 +405,36 @@ if uploaded_files:
                 st.write(f"    Firmato da: **{signer_name}**")
             with coly:
 
-                if firma_ok:
-                    st.success("Firma valida ✅")
-                else:
-                    st.error("Firma NON valida ⚠️")
+                if firma_ok:
+                    st.success("Firma valida ✅")
+                else:
+                    st.error("Firma NON valida ⚠️")
 
-            # 6) Elimino la cartella temporanea
-            shutil.rmtree(temp_single, ignore_errors=True)
+            # 6) Elimino la cartella temporanea
+            shutil.rmtree(temp_single, ignore_errors=True)
 
-        else:
-            st.warning(f"Ignoro «{nome}»: estensione non supportata ({suff}).")
+        else:
+            st.warning(f"Ignoro «{nome}»: estensione non supportata ({suff}).")
 
-    # --- Rimuovo cartelle duplicate con stesso contenuto ---
-    remove_duplicate_folders(root_temp)
+    # --- Rimuovo cartelle duplicate con stesso contenuto ---
+    remove_duplicate_folders(root_temp)
 
-    # --- Creo lo ZIP di output con tutta la struttura “pulita” -------------
-    zip_out_path = root_temp / output_filename
-    with zipfile.ZipFile(zip_out_path, "w", zipfile.ZIP_DEFLATED) as zipf:
-        for root, _, files in os.walk(root_temp):
-            for file in files:
-                if file == output_filename:
-                    continue
-                file_path = Path(root) / file
-                rel_path = file_path.relative_to(root_temp)
-                zipf.write(file_path, rel_path)
+    # --- Creo lo ZIP di output con tutta la struttura “pulita” -------------
+    zip_out_path = root_temp / output_filename
+    with zipfile.ZipFile(zip_out_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+        for root, _, files in os.walk(root_temp):
+            for file in files:
+                if file == output_filename:
+                    continue
+                file_path = Path(root) / file
+                rel_path = file_path.relative_to(root_temp)
+                zipf.write(file_path, rel_path)
 
-    # Pulsante per scaricare
-    with open(zip_out_path, "rb") as f:
-        st.download_button(
-            label="Scarica il file ZIP con tutte le estrazioni",
-            data=f,
-            file_name=output_filename,
-            mime="application/zip"
-        )
+    # Pulsante per scaricare
+    with open(zip_out_path, "rb") as f:
+        st.download_button(
+            label="Scarica il file ZIP con tutte le estrazioni",
+            data=f,
+            file_name=output_filename,
+            mime="application/zip"
+        )
