@@ -236,9 +236,21 @@ if uploaded_files:
 
             try:
                 with zipfile.ZipFile(zp, "r") as zf:
-                    zf.extractall(tmp)
-            except (zipfile.BadZipFile, EOFError):
-                st.error(f"Errore estrazione ZIP «{name}»")
+                    namelist = zf.namelist()
+                    # se c’è esattamente un inner.zip e si trova in una subfolder 
+                    # con lo stesso nome, lo estraiamo a parte:
+                    inner_zips = [n for n in namelist if n.lower().endswith('.zip')]
+                    if len(inner_zips) == 1 and inner_zips[0].startswith(inner_zips[0].split('/')[0] + '/'):
+                        inner_path = inner_zips[0]
+                        target_inner = tmp / Path(inner_path).name
+                        target_inner.write_bytes(zf.read(inner_path))
+                        # facciamo avanzare "zp" sul file ZIP interno
+                        zp = target_inner
+                    else:
+                        # comportamento standard
+                        zf.extractall(tmp)
+            except (zipfile.BadZipFile, EOFError) as e:
+                st.error(f"Errore estrazione ZIP «{name}»: {e}")
                 shutil.rmtree(tmp, ignore_errors=True)
                 continue
 
