@@ -237,26 +237,26 @@ if uploaded_files:
             try:
                 with zipfile.ZipFile(zp, "r") as zf:
                     namelist = zf.namelist()
-                    st.write(f"DEBUG: Contenuto di {name}: {namelist}")
+                    #st.write(f"DEBUG: Contenuto di {name}: {namelist}")
             
                     # Trova tutti i .zip interni
                     inner_zips = [n for n in namelist if n.lower().endswith(".zip")]
-                    st.write(f"DEBUG: nested ZIP trovati: {inner_zips}")
+                    #st.write(f"DEBUG: nested ZIP trovati: {inner_zips}")
             
                     if len(inner_zips) == 1:
                         inner = inner_zips[0]
-                        st.write(f"DEBUG: Estraggo solo il nested ZIP interno «{inner}»")
+                        #st.write(f"DEBUG: Estraggo solo il nested ZIP interno «{inner}»")
                         # Leggi i byte dello zip interno
                         data = zf.read(inner)
                         target_inner = tmp / Path(inner).name
                         target_inner.write_bytes(data)
-                        st.write(f"DEBUG: ZIP interno scritto in tmp come «{target_inner.name}»")
+                        #st.write(f"DEBUG: ZIP interno scritto in tmp come «{target_inner.name}»")
             
                         # Ora apro e scompatto quello
                         try:
                             with zipfile.ZipFile(target_inner, "r") as inner_zf:
                                 inner_zf.extractall(tmp)
-                            st.write(f"DEBUG: Estrazione inner ZIP «{target_inner.name}» riuscita")
+                            #st.write(f"DEBUG: Estrazione inner ZIP «{target_inner.name}» riuscita")
                             # Aggiorno zp al nested ZIP, così recursive_unpack_and_flatten lo vedrà
                             zp = target_inner
                         except (zipfile.BadZipFile, EOFError) as e_inner:
@@ -266,11 +266,11 @@ if uploaded_files:
             
                     else:
                         if not inner_zips:
-                            st.write("DEBUG: nessun nested ZIP, estrazione standard")
+                            #st.write("DEBUG: nessun nested ZIP, estrazione standard")
                         else:
-                            st.write("DEBUG: più di un nested ZIP, estrazione standard")
+                            #st.write("DEBUG: più di un nested ZIP, estrazione standard")
                         zf.extractall(tmp)
-                        st.write(f"DEBUG: Estrazione standard di «{name}» riuscita")
+                        #st.write(f"DEBUG: Estrazione standard di «{name}» riuscita")
             
             except (zipfile.BadZipFile, EOFError) as e:
                 st.error(f"Errore estrazione ZIP «{name}»: {e}")
