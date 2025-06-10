@@ -39,7 +39,6 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
     if res1.returncode != 0:
         st.error(f"Errore estrazione «{p7m_file_path.name}»: {res1.stderr.decode().strip()}")
         return None, "", False
-
     # 2) Estraggo il certificato in PEM, leggo subject/dates, poi elimino il .pem
     cert_pem_path = output_dir / (payload_basename + "_cert.pem")
     cmd2 = [
@@ -77,10 +76,9 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
     except:
         pass
 
-
     # Estraggo subject e controllo validità
     lines = res3.stdout.splitlines()
-    subject_line = "\n".join(lines)
+    subject_line = "\n".join(lines)  # Unisci le linee in una singola stringa
     candidato_rdn = ["CN", "SN", "UID", "emailAddress", "SERIALNUMBER"]
     signer_name = "Sconosciuto"
     for rdn in candidato_rdn:
@@ -92,8 +90,12 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
     def parse_openssl_date(s: str) -> datetime:
         return datetime.strptime(s.strip(), "%b %d %H:%M:%S %Y %Z")
 
-    not_before = parse_openssl_date(lines.split("=", 1))
-    not_after  = parse_openssl_date(lines.split("=", 1))
+    # Trova le linee che contengono le date di validità
+    not_before_line = next(line for line in lines if "notBefore" in line)
+    not_after_line = next(line for line in lines if "notAfter" in line)
+
+    not_before = parse_openssl_date(not_before_line.split("=", 1))
+    not_after  = parse_openssl_date(not_after_line.split("=", 1))
     now = datetime.utcnow()
     is_valid = (not_before <= now <= not_after)
 
@@ -116,7 +118,6 @@ def recursive_unpack_and_flatten(directory: Path):
     for archive_path in list(directory.rglob("*.zip")):
         if not archive_path.is_file():
             continue
-
         parent_folder = archive_path.parent
         extract_folder = parent_folder / f"{archive_path.stem}_unzipped"
 
@@ -252,7 +253,6 @@ def cleanup_unprocessed_p7m_dirs(root_dir: Path):
                 d.rmdir()
             except:
                 pass
-
 # --- Nuova funzione di “cleanup” per rimuovere cartelle che terminano con “zip” ---
 # se esiste già la stessa cartella senza “zip” (evita doppioni)
 def cleanup_extra_zip_named_dirs(root_dir: Path):
@@ -397,7 +397,6 @@ if uploaded_files:
 
             # 6) Elimino la cartella temporanea
             shutil.rmtree(temp_single, ignore_errors=True)
-
         else:
             st.warning(f"Ignoro «{nome}»: estensione non supportata ({suff}).")
 
