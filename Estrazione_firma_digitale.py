@@ -8,6 +8,7 @@ from pathlib import Path
 from datetime import datetime
 import re
 from PIL import Image
+import pandas as pd
 
 # --- Layout con logo a destra ---------------------------------------------
 col1, col2 = st.columns([7, 3])
@@ -318,11 +319,19 @@ if uploaded_files:
                 fp = Path(root) / f
                 rp = fp.relative_to(root_temp)
                 zf.write(fp, rp)
-    # --- Anteprima del contenuto del ZIP di output ----------------------------
+                
+    # Anteprima del contenuto del ZIP di output come tabella
     st.subheader("Anteprima del contenuto del file ZIP risultante")
     with zipfile.ZipFile(zip_out, "r") as preview_zf:
-        for entry in preview_zf.namelist():
-            st.write(f"• {entry}")
+        rows = []
+        for info in preview_zf.infolist():
+            rows.append({
+                "Nome file": info.filename,
+                "Dimensione (bytes)": info.file_size
+            })
+        df = pd.DataFrame(rows)
+        st.table(df)
+        
     # Bottone di download
     with open(zip_out, "rb") as f:
         st.download_button(
