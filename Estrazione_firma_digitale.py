@@ -266,7 +266,7 @@ if uploaded_files:
             
                     else:
                         if not inner_zips:
-                            #st.write("DEBUG: nessun nested ZIP, estrazione standard")
+                            st.write("DEBUG: nessun nested ZIP, estrazione standard")
                         else:
                             #st.write("DEBUG: più di un nested ZIP, estrazione standard")
                         zf.extractall(tmp)
