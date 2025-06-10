@@ -236,33 +236,28 @@ if uploaded_files:
 
             try:
                 with zipfile.ZipFile(zp, "r") as zf:
-                    # — Anteprima contenuto ZIP —
-                    st.subheader(f"Anteprima contenuto di «{name}»")
-                    for entry in zf.namelist():
-                        st.write(f"• {entry}")
-                
                     # Trova tutti i .zip interni
                     inner_zips = [n for n in zf.namelist() if n.lower().endswith(".zip")]
-                
+
                     if len(inner_zips) == 1:
                         inner = inner_zips[0]
                         # Leggi i byte dello zip interno
                         data = zf.read(inner)
                         target_inner = tmp / Path(inner).name
                         target_inner.write_bytes(data)
-                
+
                         # Ora apro e scompatto quello
                         with zipfile.ZipFile(target_inner, "r") as inner_zf:
                             inner_zf.extractall(tmp)
                         zp = target_inner
-                
+
                     else:
                         zf.extractall(tmp)
-                
-                except (zipfile.BadZipFile, EOFError) as e:
-                    st.error(f"Errore estrazione ZIP «{name}»: {e}")
-                    shutil.rmtree(tmp, ignore_errors=True)
-                    continue
+
+            except (zipfile.BadZipFile, EOFError) as e:
+                st.error(f"Errore estrazione ZIP «{name}»: {e}")
+                shutil.rmtree(tmp, ignore_errors=True)
+                continue
 
 
             items = [p for p in tmp.iterdir() if p != zp]
