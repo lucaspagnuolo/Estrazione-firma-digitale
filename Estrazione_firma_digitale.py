@@ -79,7 +79,7 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
 
     # Estraggo subject e controllo validità
     lines = res3.stdout.splitlines()
-    subject_line = lines
+    subject_line = lines if lines else ""
     candidato_rdn = ["CN", "SN", "UID", "emailAddress", "SERIALNUMBER"]
     signer_name = "Sconosciuto"
     for rdn in candidato_rdn:
@@ -212,6 +212,7 @@ def process_directory_for_p7m(directory: Path, log_root: str):
                 payload_path.unlink()
             except:
                 pass
+
         # Log in UI
         colx, coly = st.columns([4, 1])
         with colx:
@@ -269,7 +270,7 @@ def cleanup_extra_zip_named_dirs(root_dir: Path):
         if d.name.lower().endswith("zip"):
             sibling_name = d.name[:-3]
             sibling = d.parent / sibling_name
-            if sibling.exists() and sibling.is_dir():
+            if sibling.exists() and sibling is_dir():
                 # Rimuovo completamente la cartella “d” (che terminava in “zip”)
                 shutil.rmtree(d, ignore_errors=True)
 
@@ -324,6 +325,7 @@ if uploaded_files:
                 base_dir = items
             else:
                 base_dir = temp_zip_dir
+
             # 4) Scompattiamo tutti gli ZIP annidati ed appiattiamo le cartelle
             recursive_unpack_and_flatten(base_dir)
 
@@ -358,6 +360,7 @@ if uploaded_files:
             if not payload_path:
                 shutil.rmtree(temp_single, ignore_errors=True)
                 continue
+
             # 3) Rimuovo il .p7m
             try:
                 p7m_path.unlink()
@@ -400,7 +403,7 @@ if uploaded_files:
     # --- Rimuovo cartelle duplicate con stesso contenuto ---
     remove_duplicate_folders(root_temp)
 
-    # --- Creo lo ZIP di output con tutta la struttura “pulita” -------------
+    # --- Creo lo ZIP di output con tutta la struttura “pulita” 
     zip_out_path = root_temp / output_filename
     with zipfile.ZipFile(zip_out_path, "w", zipfile.ZIP_DEFLATED) as zipf:
         for root, _, files in os.walk(root_temp):
