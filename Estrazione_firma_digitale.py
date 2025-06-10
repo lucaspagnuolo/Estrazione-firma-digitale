@@ -319,12 +319,18 @@ if uploaded_files:
             with open(zip_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
 
-            # 2) Estraggo tutto dentro temp_zip_dir
+            # 2)  --- Estrazione con gestione errori ZIP ---
             try:
                 with zipfile.ZipFile(zip_path, "r") as zf:
+                    # Verifica integrità: restituisce il primo membro corrotto, o None
+                    bad = zf.testzip()
+                    if bad:
+                        st.warning(f"Archivio corrotto: file danneggiato → {bad}. Lo salto.")
+                        raise EOFError(f"Corrupt member: {bad}")
                     zf.extractall(temp_zip_dir)
-            except zipfile.BadZipFile:
-                st.error(f"Errore: «{nome}» non è un archivio ZIP valido.")
+            except (zipfile.BadZipFile, EOFError) as e:
+                st.warning(f"Impossibile estrarre «{nome}»: {e}")
+                # Pulisci la cartella temporanea e passa oltre
                 shutil.rmtree(temp_zip_dir, ignore_errors=True)
                 continue
 
