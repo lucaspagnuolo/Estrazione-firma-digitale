@@ -320,17 +320,36 @@ if uploaded_files:
                 rp = fp.relative_to(root_temp)
                 zf.write(fp, rp)
                 
-    # Anteprima del contenuto del ZIP di output come tabella
-    st.subheader("Anteprima del contenuto del file ZIP risultante")
+    # Anteprima dinamica della struttura del file ZIP (multi-livello)
+    st.subheader("Anteprima strutturale del file ZIP risultante")
+    # 1) Raccolgo tutti i path completi
     with zipfile.ZipFile(zip_out, "r") as preview_zf:
-        rows = []
-        for info in preview_zf.infolist():
-            rows.append({
-                "Nome file": info.filename,
-                "Dimensione (bytes)": info.file_size
-            })
-        df = pd.DataFrame(rows)
-        st.table(df)
+        paths = [info.filename for info in preview_zf.infolist()]
+
+    # 2) Splitting su "/" in liste di parti
+    split_paths = [p.split("/") for p in paths]
+
+    # 3) Trovo il numero massimo di livelli
+    max_levels = max(len(parts) for parts in split_paths)
+
+    # 4) Definisco i nomi delle colonne dinamicamente
+    col_names = [f"Livello {i+1}" for i in range(max_levels)]
+
+    # 5) Ricostruisco un array rettangolare, padding con stringhe vuote
+    rows = [
+        parts + [""] * (max_levels - len(parts))
+        for parts in split_paths
+    ]
+
+    # 6) Costruisco il DataFrame
+    df = pd.DataFrame(rows, columns=col_names)
+
+    # 7) Nascondo i valori ripetuti in ciascuna colonna
+    for col in col_names:
+        df[col] = df[col].mask(df[col] == df[col].shift(), "")
+
+    # 8) Mostro la tabella
+    st.table(df)
         
     # Bottone di download
     with open(zip_out, "rb") as f:
