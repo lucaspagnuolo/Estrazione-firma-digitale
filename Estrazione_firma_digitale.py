@@ -12,7 +12,7 @@ from PIL import Image
 # --- Layout con logo a destra ---------------------------------------------
 col1, col2 = st.columns([7, 3])
 with col1:
-    st.title("Estrattore di file firmati digitalmente (CAdES)")
+    st.title("Estrattore di file firmati digitalamente (CAdES)")
 with col2:
     logo = Image.open("img/Consip_Logo.png")
     st.image(logo, width=300)
@@ -270,6 +270,31 @@ def cleanup_extra_zip_named_dirs(root_dir: Path):
                 shutil.rmtree(d, ignore_errors=True)
 
 
+# --- Funzione per rimuovere cartelle duplicate con lo stesso contenuto ---
+def remove_duplicate_folders(root_dir: Path):
+    """
+    Scorre tutte le directory sotto root_dir. Se trova una directory
+    che contiene un'altra directory con lo stesso nome e contenuto,
+    rimuove la directory interna duplicata.
+    """
+    for dirpath, dirnames, filenames in os.walk(root_dir):
+        for dirname in dirnames:
+            current_dir = Path(dirpath) / dirname
+            sibling_dir = Path(dirpath) / (dirname + "_unzipped")
+            if sibling_dir.exists() and sibling_dir.is_dir():
+                if compare_directories(current_dir, sibling_dir):
+                    shutil.rmtree(sibling_dir, ignore_errors=True)
+
+def compare_directories(dir1: Path, dir2: Path) -> bool:
+    """
+    Confronta due directory per verificare se contengono gli stessi file
+    (stesso nome ed estensione).
+    """
+    files1 = sorted(f.name for f in dir1.iterdir() if f.is_file())
+    files2 = sorted(f.name for f in dir2.iterdir() if f.is_file())
+    return files1 == files2
+
+
 # --- Streamlit: upload multiplo, creazione cartelle temporanee -------------
 output_name = st.text_input(
     "Nome del file ZIP di output (includi “.zip” o sarà aggiunto automaticamente):",
@@ -321,9 +346,9 @@ if uploaded_files:
             # 4) Scompattiamo tutti gli ZIP annidati ed appiattiamo le cartelle
             recursive_unpack_and_flatten(base_dir)
 
-            # 5) Copio TUTTO (cartelle e file) da base_dir → root_temp/<nome_base_zip>_unzipped/
+            # 5) Copio TUTTO (cartelle e file) da base_dir → root_temp/<nome_base_zip>/
             nome_base = zip_path.stem
-            target_root_for_this_zip = root_temp / f"{nome_base}_unzipped"
+            target_root_for_this_zip = root_temp / nome_base
             shutil.copytree(base_dir, target_root_for_this_zip)
 
             # 6) Processiamo eventuali .p7m rimasti (a ogni livello) dentro target_root_for_this_zip
@@ -390,25 +415,4 @@ if uploaded_files:
             shutil.rmtree(temp_single, ignore_errors=True)
 
         else:
-            st.warning(f"Ignoro «{nome}»: estensione non supportata ({suff}).")
-
-    # --- Creo lo ZIP di output con tutta la struttura “pulita” -------------
-    zip_out_path = root_temp / output_filename
-    with zipfile.ZipFile(zip_out_path, "w", zipfile.ZIP_DEFLATED) as zipf:
-        for root, _, files in os.walk(root_temp):
-            for file in files:
-                if file == output_filename:
-                    continue
-                file_path = Path(root) / file
-                rel_path = file_path.relative_to(root_temp)
-                zipf.write(file_path, rel_path)
-
-    # Pulsante per scaricare
-    with open(zip_out_path, "rb") as f:
-        st.download_button(
-            label="Scarica il file ZIP con tutte le estrazioni",
-            data=f,
-            file_name=output_filename,
-            mime="application/zip"
-        )
-
+            st.warning(f"Ignoro «{nome}»: estensione non supportata ({suff
