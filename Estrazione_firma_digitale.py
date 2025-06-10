@@ -64,20 +64,17 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
     res3 = subprocess.run(cmd3, capture_output=True, text=True)
     if res3.returncode != 0:
         st.error(f"Errore lettura info certificato da «{cert_pem_path.name}»: {res3.stderr.strip()}")
-        # anche in caso di errore, elimino il .pem
         try:
             cert_pem_path.unlink()
         except:
             pass
         return output_file, "Sconosciuto", False
 
-    # Elimino il .pem, non serve conservarlo
     try:
         cert_pem_path.unlink()
     except:
         pass
 
-    # Estraggo subject e controllo validità
     lines = res3.stdout.splitlines()
     subject_line = lines[0]
     candidato_rdn = ["CN", "SN", "UID", "emailAddress", "SERIALNUMBER"]
@@ -92,12 +89,10 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
         return datetime.strptime(s.strip(), "%b %d %H:%M:%S %Y %Z")
 
     not_before = parse_openssl_date(lines[1].split("=", 1)[1])
-    not_after  = parse_openssl_date(lines[2].split("=", 1)[1])
+    not_after = parse_openssl_date(lines[2].split("=", 1)[1])
     now = datetime.utcnow()
     is_valid = (not_before <= now <= not_after)
 
-    # 3) Se il payload “output_file” è un vero ZIP (verifico gli header),
-    #    lo rinomino aggiungendo l’estensione .zip.
     try:
         with open(output_file, "rb") as f:
             header = f.read(4)
@@ -109,7 +104,6 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
         pass
 
     return output_file, signer_name, is_valid
-
 
 # --- Funzione ricorsiva che scompatta tutti gli ZIP e appiattisce cartelle ---
 def recursive_unpack_and_flatten(directory: Path):
@@ -128,22 +122,15 @@ def recursive_unpack_and_flatten(directory: Path):
             continue
 
         parent_folder = archive_path.parent
-
-        # Se il nome termina con “zip”, tolgo quel suffisso per la cartella estrazione
         raw_name = archive_path.stem
         if raw_name.lower().endswith("zip"):
             raw_name = raw_name[:-3]
 
         extract_folder = parent_folder / raw_name
-
-        # Se esiste un file con lo stesso nome, lo elimino
         if extract_folder.exists() and extract_folder.is_file():
             extract_folder.unlink()
-
-        # Creo la directory di estrazione
         extract_folder.mkdir(exist_ok=True)
 
-        # Estraggo i contenuti
         try:
             with zipfile.ZipFile(archive_path, "r") as zf:
                 zf.extractall(extract_folder)
@@ -152,11 +139,7 @@ def recursive_unpack_and_flatten(directory: Path):
             archive_path.unlink(missing_ok=True)
             continue
 
-        # Rimuovo il .zip originale
         archive_path.unlink(missing_ok=True)
-
-        # *** Flatten automatico: se dentro “extract_folder” c’è UNA sola sottocartella
-        # e nessun file a fianco, sposto tutto verso l’alto e cancello quella subdir ***
         items = list(extract_folder.iterdir())
         if len(items) == 1 and items[0].is_dir():
             lone_sub = items[0]
@@ -164,9 +147,7 @@ def recursive_unpack_and_flatten(directory: Path):
                 shutil.move(str(sub_item), str(extract_folder))
             lone_sub.rmdir()
 
-        # Ricorsione
         recursive_unpack_and_flatten(extract_folder)
-
 
 # --- Procedura principale: processa ogni directory cercando .p7m ----------
 def process_directory_for_p7m(directory: Path, log_root: str):
@@ -182,7 +163,6 @@ def process_directory_for_p7m(directory: Path, log_root: str):
          .p7m ancora più in profondità.
       4) logga in UI chi ha firmato e lo stato di validità.
     """
-    # Itero su una lista statica di .p7m (li cancellerò mano a mano)
     for p7m_path in list(directory.rglob("*.p7m")):
         rel = p7m_path.relative_to(directory)
         st.write(f"{log_root} · Trovato .p7m in **{rel.parent}**: {p7m_path.name}")
@@ -191,28 +171,22 @@ def process_directory_for_p7m(directory: Path, log_root: str):
         if not payload_path:
             continue
 
-        # Rimuovo il .p7m
         try:
             p7m_path.unlink()
         except:
             pass
 
-        # Se il payload estratto è un .zip, lo scompatto e rientro con ricorsione
         if payload_path.suffix.lower() == ".zip":
+            # Appiattimento e estrazione all'interno della stessa cartella
             recursive_unpack_and_flatten(payload_path.parent)
-
-            # Provo a processare eventuali .p7m dentro la nuova cartella
             nuova_cartella = payload_path.parent / payload_path.stem
             if nuova_cartella.exists() and nuova_cartella.is_dir():
                 process_directory_for_p7m(nuova_cartella, log_root + "  ")
-
-            # Rimuovo l’eventuale archivio .zip residuo
             try:
                 payload_path.unlink()
             except:
                 pass
 
-        # Log in UI
         colx, coly = st.columns([4, 1])
         with colx:
             st.write(f"  – File estratto: **{payload_path.stem + payload_path.suffix}**")
@@ -223,16 +197,8 @@ def process_directory_for_p7m(directory: Path, log_root: str):
             else:
                 st.error("Firma NON valida ⚠️")
 
-
 # --- Funzione di “cleanup” per rimuovere directory con soli .p7m non processati ---
 def cleanup_unprocessed_p7m_dirs(root_dir: Path):
-    """
-    Scorre ricorsivamente tutte le cartelle dentro `root_dir`.
-    Se trova una cartella che contiene solo file .p7m (e nessun altro tipo di file
-    o sottocartelle), elimina quei .p7m e rimuove la cartella.
-    Questo evita di lasciare directory con soli .p7m non processati.
-    """
-    # Otteniamo tutte le directory ordinate dalla più profonda alla meno profonda
     all_dirs = sorted(
         (p for p in root_dir.rglob("*") if p.is_dir()),
         key=lambda d: len(str(d).split(os.sep)),
@@ -240,7 +206,6 @@ def cleanup_unprocessed_p7m_dirs(root_dir: Path):
     )
     for d in all_dirs:
         files = [f for f in d.iterdir() if f.is_file()]
-        # Se ci sono file e tutti hanno estensione .p7m, li elimino e rimuovo la cartella
         if files and all(f.suffix.lower() == ".p7m" for f in files):
             for f in files:
                 try:
@@ -252,16 +217,8 @@ def cleanup_unprocessed_p7m_dirs(root_dir: Path):
             except:
                 pass
 
-
 # --- Nuova funzione di “cleanup” per rimuovere cartelle che terminano con “zip” ---
-# se esiste già la stessa cartella senza “zip” (evita doppioni)
 def cleanup_extra_zip_named_dirs(root_dir: Path):
-    """
-    Scorre tutte le directory sotto `root_dir`. Se trova una directory
-    il cui nome termina con “zip” e accanto esiste una directory con
-    lo stesso nome senza quel suffisso, rimuove la cartella “zip”.
-    """
-    # Scorro le directory in ordine profondo→superficiale (in caso di annidamenti)
     all_dirs = sorted(
         (d for d in root_dir.rglob("*") if d.is_dir()),
         key=lambda d: len(str(d).split(os.sep)),
@@ -272,9 +229,7 @@ def cleanup_extra_zip_named_dirs(root_dir: Path):
             sibling_name = d.name[:-3]
             sibling = d.parent / sibling_name
             if sibling.exists() and sibling.is_dir():
-                # Rimuovo completamente la cartella “d” (che terminava in “zip”)
                 shutil.rmtree(d, ignore_errors=True)
-
 
 # --- Streamlit: upload multiplo, creazione cartelle temporanee -------------
 output_name = st.text_input(
@@ -292,7 +247,6 @@ uploaded_files = st.file_uploader(
 )
 
 if uploaded_files:
-    # Cartella temporanea principale
     root_temp = Path(tempfile.mkdtemp(prefix="combined_"))
 
     for uploaded_file in uploaded_files:
@@ -301,14 +255,11 @@ if uploaded_files:
 
         if suff == ".zip":
             st.write(f"🔄 Rilevato file ZIP: {nome}")
-
-            # 1) Creo cartella temporanea per decomprimere questo ZIP
             temp_zip_dir = Path(tempfile.mkdtemp(prefix="zip_unpack_"))
             zip_path = temp_zip_dir / nome
             with open(zip_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
 
-            # 2) Estraggo tutto dentro temp_zip_dir
             try:
                 with zipfile.ZipFile(zip_path, "r") as zf:
                     zf.extractall(temp_zip_dir)
@@ -317,71 +268,56 @@ if uploaded_files:
                 shutil.rmtree(temp_zip_dir, ignore_errors=True)
                 continue
 
-            # 3) Se temp_zip_dir contiene una sola cartella principale, la uso; altrimenti, rimango su temp_zip_dir
             items = [p for p in temp_zip_dir.iterdir() if p != zip_path]
             if len(items) == 1 and items[0].is_dir():
                 base_dir = items[0]
             else:
                 base_dir = temp_zip_dir
 
-            # 4) Scompattiamo tutti gli ZIP annidati ed appiattiamo le cartelle
-            recursive_unpack_and_flatten(base_dir)
-
-            # 5) Copio TUTTO (cartelle e file) da base_dir → root_temp/<nome_base_zip>/
+            # Copio TUTTO (cartelle e file) da base_dir → root_temp/<nome_base_zip>/
             nome_base = zip_path.stem
             target_root_for_this_zip = root_temp / nome_base
             shutil.copytree(base_dir, target_root_for_this_zip)
 
-            # 6) Processiamo eventuali .p7m rimasti (a ogni livello) dentro target_root_for_this_zip
+            # Processiamo eventuali .p7m dentro target_root_for_this_zip
             process_directory_for_p7m(target_root_for_this_zip, f"{nome_base}")
 
-            # 7) Pulizia di cartelle contenenti solo .p7m non processati
+            # Cleanup cartelle con soli .p7m e cartelle “*.zip” ridondanti
             cleanup_unprocessed_p7m_dirs(target_root_for_this_zip)
-
-            # 8) Rimozione di eventuali cartelle “*.zip” ridondanti
             cleanup_extra_zip_named_dirs(target_root_for_this_zip)
 
-            # 9) Rimuovo la cartella temporanea usata per l’estrazione iniziale
             shutil.rmtree(temp_zip_dir, ignore_errors=True)
 
         elif suff == ".p7m":
             st.write(f"🔄 Rilevato file .p7m: {nome}")
 
-            # 1) Metto il .p7m in una cartella temporanea
             temp_single = Path(tempfile.mkdtemp(prefix="single_p7m_"))
             p7m_path = temp_single / nome
             with open(p7m_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
 
-            # 2) Estraggo direttamente in root_temp (flat)
             payload_path, signer_name, firma_ok = extract_signed_content(p7m_path, root_temp)
             if not payload_path:
                 shutil.rmtree(temp_single, ignore_errors=True)
                 continue
 
-            # 3) Rimuovo il .p7m
             try:
                 p7m_path.unlink()
             except:
                 pass
 
-            # 4) Se è un ZIP, lo estraggo e appiattisco in root_temp, poi elimino .p7m non processati e directory “*.zip” ridondanti
             if payload_path.suffix.lower() == ".zip":
                 recursive_unpack_and_flatten(root_temp)
-                # Processiamo eventuali .p7m dentro le nuove sottocartelle
                 for subd in root_temp.iterdir():
                     if subd.is_dir():
                         process_directory_for_p7m(subd, subd.name)
-                # Pulizia di cartelle con soli .p7m non processati
                 cleanup_unprocessed_p7m_dirs(root_temp)
-                # Rimuovo cartelle “*.zip” ridondanti
                 cleanup_extra_zip_named_dirs(root_temp)
                 try:
                     payload_path.unlink()
                 except:
                     pass
 
-            # 5) Mostro in UI firmatario e stato
             colx, coly = st.columns([4, 1])
             with colx:
                 st.write(f"  – File estratto: **{payload_path.name}**")
@@ -392,13 +328,9 @@ if uploaded_files:
                 else:
                     st.error("Firma NON valida ⚠️")
 
-            # 6) Elimino la cartella temporanea
             shutil.rmtree(temp_single, ignore_errors=True)
 
-        else:
-            st.warning(f"Ignoro «{nome}»: estensione non supportata ({suff}).")
-
-    # --- Creo lo ZIP di output con tutta la struttura “pulita” -------------
+    # Creo lo ZIP di output con tutta la struttura "pulita"
     zip_out_path = root_temp / output_filename
     with zipfile.ZipFile(zip_out_path, "w", zipfile.ZIP_DEFLATED) as zipf:
         for root, _, files in os.walk(root_temp):
@@ -409,11 +341,4 @@ if uploaded_files:
                 rel_path = file_path.relative_to(root_temp)
                 zipf.write(file_path, rel_path)
 
-    # Pulsante per scaricare
     with open(zip_out_path, "rb") as f:
-        st.download_button(
-            label="Scarica il file ZIP con tutte le estrazioni",
-            data=f,
-            file_name=output_filename,
-            mime="application/zip"
-        )
