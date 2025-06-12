@@ -295,35 +295,40 @@ if uploaded_files:
 
     remove_duplicate_folders(root_temp)
 
-    # Creo ZIP di output
-    zip_out = root_temp / output_filename
-    with zipfile.ZipFile(zip_out, "w", zipfile.ZIP_DEFLATED) as zf:
-        for root, _, files in os.walk(root_temp):
-            for f in files:
-                if f == output_filename:
-                    continue
-                fp = Path(root) / f
-                rp = fp.relative_to(root_temp)
-                zf.write(fp, rp)
+    # --- DEBUG: lista file prima di creare ZIP ------------------------
+    st.write("📦 File che sto per mettere dentro l'archivio:")
+    all_files = []
+    for root, _, files in os.walk(root_temp):
+        for f in files:
+            if f == output_filename:
+                continue
+            all_files.append(Path(root) / f)
+    for p in all_files:
+        st.write(f"  - {p.relative_to(root_temp)}")
 
-    # --- Anteprima struttura multi-livello con protezione errori ---
+    # --- Creazione del file ZIP in modo più semplice -------------------
+    zip_base = tempfile.mktemp(prefix="extracted_")
+    shutil.make_archive(zip_base, 'zip', root_temp)
+    zip_out = Path(f"{zip_base}.zip")
+
+    # --- Anteprima struttura multi-livello ----------------------------
     try:
         with zipfile.ZipFile(zip_out, "r") as preview_zf:
-            paths = [info.filename for info in preview_zf.infolist() if info.filename.strip()]
-        if paths:
-            split_paths = [p.split("/") for p in paths]
+            names = [n for n in preview_zf.namelist() if n.strip()]
+        if names:
+            split_paths = [p.split("/") for p in names]
             max_levels = max(len(parts) for parts in split_paths)
-            col_names = [f"Livello {i+1}" for i in range(max_levels)]
-            rows = [parts + [""] * (max_levels - len(parts)) for parts in split_paths]
-            df = pd.DataFrame(rows, columns=col_names)
-            for col in col_names:
-                df[col] = df[col].mask(df[col] == df[col].shift(), "")
+            cols = [f"Livello {i+1}" for i in range(max_levels)]
+            rows = [parts + [""]*(max_levels-len(parts)) for parts in split_paths]
+            df = pd.DataFrame(rows, columns=cols)
+            for c in cols:
+                df[c] = df[c].mask(df[c] == df[c].shift(), "")
             st.subheader("Anteprima strutturale del file ZIP risultante")
             st.table(df)
         else:
             st.warning("Nessun file valido da mostrare in anteprima.")
-    except Exception:
-        st.warning("Impossibile generare l'anteprima della struttura.")
+    except Exception as e:
+        st.warning(f"Impossibile generare l'anteprima della struttura: {e}")
 
     # Bottone di download sempre disponibile
     with open(zip_out, "rb") as f:
