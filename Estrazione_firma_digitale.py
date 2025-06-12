@@ -87,8 +87,8 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
     not_after_line  = next((l for l in lines if "notAfter" in l), "")
 
     try:
-        not_before = parse_openssl_date(not_before_line.split("=", 1))
-        not_after  = parse_openssl_date(not_after_line.split("=", 1))
+        not_before = parse_openssl_date(not_before_line.split("=", 1)[1])
+        not_after  = parse_openssl_date(not_after_line.split("=", 1)[1])
         now = datetime.utcnow()
         is_valid = (not_before <= now <= not_after)
     except Exception:
@@ -104,6 +104,7 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
             output_file = new_zip
     except:
         pass
+
     return output_file, signer_name, is_valid
 
 # --- Funzione ricorsiva che scompatta tutti gli ZIP e appiattisce cartelle ---
@@ -130,8 +131,8 @@ def recursive_unpack_and_flatten(directory: Path):
 
         archive_path.unlink(missing_ok=True)
         items = list(extract_folder.iterdir())
-        if len(items) == 1 and items.is_dir():
-            lone = items
+        if len(items) == 1 and items[0].is_dir():
+            lone = items[0]
             for it in lone.iterdir():
                 shutil.move(str(it), str(extract_folder))
             lone.rmdir()
@@ -236,7 +237,7 @@ if uploaded_files:
                 with zipfile.ZipFile(zp, "r") as zf:
                     inner_zips = [n for n in zf.namelist() if n.lower().endswith(".zip")]
                     if len(inner_zips) == 1:
-                        inner = inner_zips
+                        inner = inner_zips[0]
                         data = zf.read(inner)
                         target_inner = tmp / Path(inner).name
                         target_inner.write_bytes(data)
@@ -320,10 +321,7 @@ if uploaded_files:
     split_paths = [p.split("/") for p in paths]
 
     # 3) Trovo il numero massimo di livelli
-    if split_paths:
-        max_levels = max(len(parts) for parts in split_paths)
-    else:
-        max_levels = 0
+    max_levels = max(len(parts) for parts in split_paths)
 
     # 4) Definisco i nomi delle colonne dinamicamente
     col_names = [f"Livello {i+1}" for i in range(max_levels)]
