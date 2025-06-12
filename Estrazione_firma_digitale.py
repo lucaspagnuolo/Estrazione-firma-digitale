@@ -20,11 +20,6 @@ with col2:
 
 # --- Funzione che esegue “openssl cms -verify” e legge il certificato -----
 def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path | None, str, bool]:
-    """
-    Estrae il payload di un .p7m, estrae il certificato (rimuovendo subito il .pem),
-    e ritorna (output_file, signer_name, is_valid). Se il payload risultante
-    è un vero ZIP (verificandone gli header), lo rinomina aggiungendo “.zip”.
-    """
     payload_basename = p7m_file_path.stem
     output_file = output_dir / payload_basename
 
@@ -64,18 +59,15 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
         "-dates"
     ]
     res3 = subprocess.run(cmd3, capture_output=True, text=True)
+    cert_pem_path.unlink(missing_ok=True)
     if res3.returncode != 0:
         st.error(f"Errore lettura info certificato da «{cert_pem_path.name}»: {res3.stderr.strip()}")
-        cert_pem_path.unlink(missing_ok=True)
         return output_file, "Sconosciuto", False
 
-    cert_pem_path.unlink(missing_ok=True)
-
     lines = res3.stdout.splitlines()
-    subject_text = "\n".join(lines)
     signer_name = "Sconosciuto"
     for rdn in ["CN", "SN", "UID", "emailAddress", "SERIALNUMBER"]:
-        m = re.search(rf"{rdn}\s*=\s*([^,/]+)", subject_text)
+        m = re.search(rf"{rdn}\s*=\s*([^,/]+)", "\n".join(lines))
         if m:
             signer_name = m.group(1).strip()
             break
@@ -83,12 +75,9 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
     def parse_openssl_date(date_str: str) -> datetime:
         return datetime.strptime(date_str.strip(), "%b %d %H:%M:%S %Y %Z")
 
-    not_before_line = next((l for l in lines if "notBefore" in l), "")
-    not_after_line  = next((l for l in lines if "notAfter" in l), "")
-
     try:
-        not_before = parse_openssl_date(not_before_line.split("=", 1)[1])
-        not_after  = parse_openssl_date(not_after_line.split("=", 1)[1])
+        not_before = parse_openssl_date(next(l for l in lines if "notBefore" in l).split("=", 1)[1])
+        not_after  = parse_openssl_date(next(l for l in lines if "notAfter"  in l).split("=", 1)[1])
         now = datetime.utcnow()
         is_valid = (not_before <= now <= not_after)
     except Exception:
@@ -159,6 +148,7 @@ def process_directory_for_p7m(directory: Path, log_root: str):
         st.write(f"{log_root} · Trovato .p7m in **{rel.parent}**: {p7m.name}")
 
         payload, signer, valid = extract_signed_content(p7m, p7m.parent)
+        st.write(f"→ extract_signed_content ha restituito: payload={payload}, signer={signer}, valid={valid}")
         if not payload:
             continue
         p7m.unlink(missing_ok=True)
@@ -267,6 +257,7 @@ if uploaded_files:
                 f.write(uploaded.getbuffer())
 
             payload, signer, valid = extract_signed_content(p7m_path, root_temp)
+            st.write(f"→ extract_signed_content ha restituito: payload={payload}, signer={signer}, valid={valid}")
             if payload:
                 p7m_path.unlink(missing_ok=True)
                 if payload.suffix.lower() == ".zip":
@@ -293,60 +284,56 @@ if uploaded_files:
         else:
             st.warning(f"Ignoro «{name}»: estensione non supportata ({ext}).")
 
-    remove_duplicate_folders(root_temp)
+    # *** DEBUG: dump struttura di root_temp ***
+    st.write("🛠 Debug: struttura interna di root_temp:")
+    for root, dirs, files in os.walk(root_temp):
+        indent = "  " * len(Path(root).relative_to(root_temp).parts)
+        st.write(f"{indent}- {Path(root).name}/")
+        for f in files:
+            st.write(f"{indent}    - {f}")
 
-    # --- DEBUG: lista file prima di creare ZIP ------------------------
-    st.write("📦 File che sto per mettere dentro l'archivio:")
+    # --- Raccolgo tutti i file prima della zip ------------------------
     all_files = []
     for root, _, files in os.walk(root_temp):
         for f in files:
             if f == output_filename:
                 continue
             all_files.append(Path(root) / f)
-    for p in all_files:
-        st.write(f"  - {p.relative_to(root_temp)}")
 
-    # --- Creazione del file ZIP in modo più semplice -------------------
-    zip_base = tempfile.mktemp(prefix="extracted_")
-    shutil.make_archive(zip_base, 'zip', root_temp)
-    zip_out = Path(f"{zip_base}.zip")
+    if not all_files:
+        st.error("❌ Nessun file estratto: controlla che i .p7m contengano payload validi e che non ci siano stati errori in OpenSSL.")
+    else:
+        st.write("📦 File che sto per mettere dentro l'archivio:")
+        for p in all_files:
+            st.write(f"  - {p.relative_to(root_temp)}")
 
-    # Anteprima dinamica della struttura del file ZIP (multi-livello)
-    st.subheader("Anteprima strutturale del file ZIP risultante")
-    # 1) Raccolgo tutti i path completi
-    with zipfile.ZipFile(zip_out, "r") as preview_zf:
-        paths = [info.filename for info in preview_zf.infolist()]
+        # --- Creazione del file ZIP -------------------
+        zip_base = tempfile.mktemp(prefix="extracted_")
+        shutil.make_archive(zip_base, 'zip', root_temp)
+        zip_out = Path(f"{zip_base}.zip")
 
-    # 2) Splitting su "/" in liste di parti
-    split_paths = [p.split("/") for p in paths]
+        # Anteprima strutturale (solo se ci sono file)
+        with zipfile.ZipFile(zip_out, "r") as preview_zf:
+            paths = [info.filename for info in preview_zf.infolist()]
 
-    # 3) Trovo il numero massimo di livelli
-    max_levels = max(len(parts) for parts in split_paths)
+        if paths:
+            split_paths = [p.split("/") for p in paths]
+            max_levels = max(len(parts) for parts in split_paths)
+            col_names = [f"Livello {i+1}" for i in range(max_levels)]
+            rows = [parts + [""]*(max_levels - len(parts)) for parts in split_paths]
+            df = pd.DataFrame(rows, columns=col_names)
+            for col in col_names:
+                df[col] = df[col].mask(df[col] == df[col].shift(), "")
+            st.subheader("Anteprima strutturale del file ZIP risultante")
+            st.table(df)
+        else:
+            st.info("📂 Anteprima: lo ZIP è vuoto, niente da mostrare.")
 
-    # 4) Definisco i nomi delle colonne dinamicamente
-    col_names = [f"Livello {i+1}" for i in range(max_levels)]
-
-    # 5) Ricostruisco un array rettangolare, padding con stringhe vuote
-    rows = [
-        parts + [""] * (max_levels - len(parts))
-        for parts in split_paths
-    ]
-
-    # 6) Costruisco il DataFrame
-    df = pd.DataFrame(rows, columns=col_names)
-
-    # 7) Nascondo i valori ripetuti in ciascuna colonna
-    for col in col_names:
-        df[col] = df[col].mask(df[col] == df[col].shift(), "")
-
-    # 8) Mostro la tabella
-    st.table(df)
-
-# Bottone di download sempre disponibile
-    with open(zip_out, "rb") as f:
-        st.download_button(
-            label="Scarica il file ZIP con tutte le estrazioni",
-            data=f,
-            file_name=output_filename,
-            mime="application/zip"
-        )
+        # Bottone di download
+        with open(zip_out, "rb") as f:
+            st.download_button(
+                label="Scarica il file ZIP con tutte le estrazioni",
+                data=f,
+                file_name=output_filename,
+                mime="application/zip"
+            )
