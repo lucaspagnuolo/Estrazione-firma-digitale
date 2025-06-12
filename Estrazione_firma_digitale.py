@@ -311,31 +311,36 @@ if uploaded_files:
     shutil.make_archive(zip_base, 'zip', root_temp)
     zip_out = Path(f"{zip_base}.zip")
 
-    # --- Anteprima struttura multi-livello (detailed log) ----------------------------
-try:
+    # Anteprima dinamica della struttura del file ZIP (multi-livello)
+    st.subheader("Anteprima strutturale del file ZIP risultante")
+    # 1) Raccolgo tutti i path completi
     with zipfile.ZipFile(zip_out, "r") as preview_zf:
-        names = [n for n in preview_zf.namelist() if n.strip()]
-    # Stampo il log completo dei percorsi trovati
-    st.subheader("Log completo dei file nell'archivio")
-    for p in names:
-        st.write(f"- {p}")
+        paths = [info.filename for info in preview_zf.infolist()]
 
-    # Costruisco e mostro la struttura multi-livello solo se ci sono elementi
-    if names:
-        split_paths = [p.split("/") for p in names]
-        max_levels = max(len(parts) for parts in split_paths)
-        cols = [f"Livello {i+1}" for i in range(max_levels)]
-        rows = [parts + [""]*(max_levels-len(parts)) for parts in split_paths]
-        df = pd.DataFrame(rows, columns=cols)
-        for c in cols:
-            df[c] = df[c].mask(df[c] == df[c].shift(), "")
-        st.subheader("Anteprima strutturale del file ZIP risultante")
-        st.table(df)
-except Exception as e:
-    # In caso di errore, stampo il traceback completo
-    import traceback
-    st.subheader("Errore durante la generazione dell'anteprima")
-    st.text(traceback.format_exc())
+    # 2) Splitting su "/" in liste di parti
+    split_paths = [p.split("/") for p in paths]
+
+    # 3) Trovo il numero massimo di livelli
+    max_levels = max(len(parts) for parts in split_paths)
+
+    # 4) Definisco i nomi delle colonne dinamicamente
+    col_names = [f"Livello {i+1}" for i in range(max_levels)]
+
+    # 5) Ricostruisco un array rettangolare, padding con stringhe vuote
+    rows = [
+        parts + [""] * (max_levels - len(parts))
+        for parts in split_paths
+    ]
+
+    # 6) Costruisco il DataFrame
+    df = pd.DataFrame(rows, columns=col_names)
+
+    # 7) Nascondo i valori ripetuti in ciascuna colonna
+    for col in col_names:
+        df[col] = df[col].mask(df[col] == df[col].shift(), "")
+
+    # 8) Mostro la tabella
+    st.table(df)
 
 # Bottone di download sempre disponibile
     with open(zip_out, "rb") as f:
