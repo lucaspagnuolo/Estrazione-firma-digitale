@@ -83,15 +83,16 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
     def parse_openssl_date(date_str: str) -> datetime:
         return datetime.strptime(date_str.strip(), "%b %d %H:%M:%S %Y %Z")
 
-    # Trovo le linee con notBefore / notAfter
-    not_before_line = next(l for l in lines if "notBefore" in l)
-    not_after_line  = next(l for l in lines if "notAfter" in l)
+    not_before_line = next((l for l in lines if "notBefore" in l), "")
+    not_after_line  = next((l for l in lines if "notAfter" in l), "")
 
-    # Split corretto: prendo solo la data dopo '='
-    not_before = parse_openssl_date(not_before_line.split("=", 1)[1])
-    not_after  = parse_openssl_date(not_after_line.split("=", 1)[1])
-    now = datetime.utcnow()
-    is_valid = (not_before <= now <= not_after)
+    try:
+        not_before = parse_openssl_date(not_before_line.split("=", 1)[1])
+        not_after  = parse_openssl_date(not_after_line.split("=", 1)[1])
+        now = datetime.utcnow()
+        is_valid = (not_before <= now <= not_after)
+    except Exception:
+        is_valid = False
 
     # 4) Se è veramente uno ZIP, rinomino
     try:
@@ -112,11 +113,9 @@ def recursive_unpack_and_flatten(directory: Path):
         if not archive_path.is_file():
             continue
         extract_folder = archive_path.parent / f"{archive_path.stem}_unzipped"
-        if extract_folder.exists():
-            if extract_folder.is_file():
-                extract_folder.unlink()
-        else:
-            extract_folder.mkdir()
+        if extract_folder.exists() and extract_folder.is_file():
+            extract_folder.unlink()
+        extract_folder.mkdir(exist_ok=True)
 
         try:
             with zipfile.ZipFile(archive_path, "r") as zf:
@@ -140,7 +139,7 @@ def recursive_unpack_and_flatten(directory: Path):
 
         recursive_unpack_and_flatten(extract_folder)
 
-# --- Funzione per confrontare due cartelle e rimuovere duplicati ------------
+# --- Funzioni di utilità per gestione duplicati ---
 def compare_directories(dir1: Path, dir2: Path) -> bool:
     f1 = sorted(f.name for f in dir1.iterdir() if f.is_file())
     f2 = sorted(f.name for f in dir2.iterdir() if f.is_file())
@@ -221,7 +220,6 @@ uploaded_files = st.file_uploader(
 )
 
 if uploaded_files:
-    # Cartella temporanea principale
     root_temp = Path(tempfile.mkdtemp(prefix="combined_"))
 
     for uploaded in uploaded_files:
@@ -237,36 +235,25 @@ if uploaded_files:
 
             try:
                 with zipfile.ZipFile(zp, "r") as zf:
-                    # Trova tutti i .zip interni
                     inner_zips = [n for n in zf.namelist() if n.lower().endswith(".zip")]
-
                     if len(inner_zips) == 1:
                         inner = inner_zips[0]
-                        # Leggi i byte dello zip interno
                         data = zf.read(inner)
                         target_inner = tmp / Path(inner).name
                         target_inner.write_bytes(data)
-
-                        # Ora apro e scompatto quello
                         with zipfile.ZipFile(target_inner, "r") as inner_zf:
                             inner_zf.extractall(tmp)
                         zp = target_inner
-
                     else:
                         zf.extractall(tmp)
-
             except (zipfile.BadZipFile, EOFError) as e:
                 st.error(f"Errore estrazione ZIP «{name}»: {e}")
                 shutil.rmtree(tmp, ignore_errors=True)
                 continue
 
-
-            items = [p for p in tmp.iterdir() if p != zp]
-            base = items[0] if len(items) == 1 and items[0].is_dir() else tmp
-            recursive_unpack_and_flatten(base)
-
+            recursive_unpack_and_flatten(tmp)
             target = root_temp / zp.stem
-            shutil.copytree(base, target)
+            shutil.copytree(tmp, target)
             process_directory_for_p7m(target, zp.stem)
             cleanup_unprocessed_p7m_dirs(target)
             cleanup_extra_zip_named_dirs(target)
@@ -306,7 +293,6 @@ if uploaded_files:
         else:
             st.warning(f"Ignoro «{name}»: estensione non supportata ({ext}).")
 
-    # Rimuovo cartelle duplicate
     remove_duplicate_folders(root_temp)
 
     # Creo ZIP di output
@@ -319,39 +305,27 @@ if uploaded_files:
                 fp = Path(root) / f
                 rp = fp.relative_to(root_temp)
                 zf.write(fp, rp)
-                
-    # Anteprima dinamica della struttura del file ZIP (multi-livello)
-    st.subheader("Anteprima strutturale del file ZIP risultante")
-    # 1) Raccolgo tutti i path completi
-    with zipfile.ZipFile(zip_out, "r") as preview_zf:
-        paths = [info.filename for info in preview_zf.infolist()]
 
-    # 2) Splitting su "/" in liste di parti
-    split_paths = [p.split("/") for p in paths]
+    # --- Anteprima struttura multi-livello con protezione errori ---
+    try:
+        with zipfile.ZipFile(zip_out, "r") as preview_zf:
+            paths = [info.filename for info in preview_zf.infolist() if info.filename.strip()]
+        if paths:
+            split_paths = [p.split("/") for p in paths]
+            max_levels = max(len(parts) for parts in split_paths)
+            col_names = [f"Livello {i+1}" for i in range(max_levels)]
+            rows = [parts + [""] * (max_levels - len(parts)) for parts in split_paths]
+            df = pd.DataFrame(rows, columns=col_names)
+            for col in col_names:
+                df[col] = df[col].mask(df[col] == df[col].shift(), "")
+            st.subheader("Anteprima strutturale del file ZIP risultante")
+            st.table(df)
+        else:
+            st.warning("Nessun file valido da mostrare in anteprima.")
+    except Exception:
+        st.warning("Impossibile generare l'anteprima della struttura.")
 
-    # 3) Trovo il numero massimo di livelli
-    max_levels = max(len(parts) for parts in split_paths)
-
-    # 4) Definisco i nomi delle colonne dinamicamente
-    col_names = [f"Livello {i+1}" for i in range(max_levels)]
-
-    # 5) Ricostruisco un array rettangolare, padding con stringhe vuote
-    rows = [
-        parts + [""] * (max_levels - len(parts))
-        for parts in split_paths
-    ]
-
-    # 6) Costruisco il DataFrame
-    df = pd.DataFrame(rows, columns=col_names)
-
-    # 7) Nascondo i valori ripetuti in ciascuna colonna
-    for col in col_names:
-        df[col] = df[col].mask(df[col] == df[col].shift(), "")
-
-    # 8) Mostro la tabella
-    st.table(df)
-        
-    # Bottone di download
+    # Bottone di download sempre disponibile
     with open(zip_out, "rb") as f:
         st.download_button(
             label="Scarica il file ZIP con tutte le estrazioni",
