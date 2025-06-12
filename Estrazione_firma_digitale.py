@@ -311,26 +311,33 @@ if uploaded_files:
     shutil.make_archive(zip_base, 'zip', root_temp)
     zip_out = Path(f"{zip_base}.zip")
 
-    # --- Anteprima struttura multi-livello ----------------------------
-    try:
-        with zipfile.ZipFile(zip_out, "r") as preview_zf:
-            names = [n for n in preview_zf.namelist() if n.strip()]
-        if names:
-            split_paths = [p.split("/") for p in names]
-            max_levels = max(len(parts) for parts in split_paths)
-            cols = [f"Livello {i+1}" for i in range(max_levels)]
-            rows = [parts + [""]*(max_levels-len(parts)) for parts in split_paths]
-            df = pd.DataFrame(rows, columns=cols)
-            for c in cols:
-                df[c] = df[c].mask(df[c] == df[c].shift(), "")
-            st.subheader("Anteprima strutturale del file ZIP risultante")
-            st.table(df)
-        else:
-            st.warning("Nessun file valido da mostrare in anteprima.")
-    except Exception as e:
-        st.warning(f"Impossibile generare l'anteprima della struttura: {e}")
+    # --- Anteprima struttura multi-livello (detailed log) ----------------------------
+try:
+    with zipfile.ZipFile(zip_out, "r") as preview_zf:
+        names = [n for n in preview_zf.namelist() if n.strip()]
+    # Stampo il log completo dei percorsi trovati
+    st.subheader("Log completo dei file nell'archivio")
+    for p in names:
+        st.write(f"- {p}")
 
-    # Bottone di download sempre disponibile
+    # Costruisco e mostro la struttura multi-livello solo se ci sono elementi
+    if names:
+        split_paths = [p.split("/") for p in names]
+        max_levels = max(len(parts) for parts in split_paths)
+        cols = [f"Livello {i+1}" for i in range(max_levels)]
+        rows = [parts + [""]*(max_levels-len(parts)) for parts in split_paths]
+        df = pd.DataFrame(rows, columns=cols)
+        for c in cols:
+            df[c] = df[c].mask(df[c] == df[c].shift(), "")
+        st.subheader("Anteprima strutturale del file ZIP risultante")
+        st.table(df)
+except Exception as e:
+    # In caso di errore, stampo il traceback completo
+    import traceback
+    st.subheader("Errore durante la generazione dell'anteprima")
+    st.text(traceback.format_exc())
+
+# Bottone di download sempre disponibile
     with open(zip_out, "rb") as f:
         st.download_button(
             label="Scarica il file ZIP con tutte le estrazioni",
