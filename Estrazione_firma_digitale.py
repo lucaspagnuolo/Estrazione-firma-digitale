@@ -264,6 +264,11 @@ if uploaded_files:
             base = items[0] if len(items) == 1 and items[0].is_dir() else tmp
             recursive_unpack_and_flatten(base)
 
+            # Se dopo unpack troviamo un'unica cartella wrapper *_unzipped, usiamola direttamente
+            post_items = list(base.iterdir())
+            if len(post_items) == 1 and post_items[0].is_dir() and post_items[0].name.endswith('_unzipped'):
+                base = post_items[0]
+
             target = root_temp / zp.stem
             shutil.copytree(base, target)
 
@@ -314,6 +319,9 @@ if uploaded_files:
 
         else:
             st.warning(f"Ignoro «{name}»: estensione non supportata ({ext}).")
+
+    # Cleanup finale: rimuovi wrapper *_unzipped
+    cleanup_unzipped_wrappers(root_temp)
 
     # DEBUG: elenco completo prima di zip
     st.write("\n--- DEBUG: elenco file in root_temp prima dello ZIP finale ---")
