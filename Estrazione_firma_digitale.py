@@ -19,100 +19,91 @@ with col2:
     st.image(logo, width=300)
 
 # --- Funzione per estrarre payload e certificato --------------------------
-def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path | None, str, bool]:
-    payload_basename = p7m_file_path.stem
-    output_file = output_dir / payload_basename
+def extract_signed_content(p7m_path: Path, output_dir: Path) -> tuple[Path | None, str, bool]:
+    base = p7m_path.stem
+    out_file = output_dir / base
 
-    # Estrai payload
-    cmd = [
-        "openssl", "cms", "-verify",
-        "-in", str(p7m_file_path),
-        "-inform", "DER",
-        "-noverify",
-        "-out", str(output_file)
-    ]
+    # Verifica payload
+    cmd = ["openssl", "cms", "-verify", "-in", str(p7m_path), "-inform", "DER", "-noverify", "-out", str(out_file)]
     res = subprocess.run(cmd, capture_output=True)
     if res.returncode != 0:
-        st.error(f"Errore estrazione {p7m_file_path.name}: {res.stderr.decode().strip()}")
+        st.error(f"Errore estrazione {p7m_path.name}: {res.stderr.decode().strip()}")
         return None, "", False
 
-    # Rinomina immediato se ZIP
+    # Rinomina ZIP
     try:
-        with open(output_file, "rb") as f:
-            if f.read(4).startswith(b"PK\x03\x04"):
-                new_zip = output_file.with_suffix(".zip")
-                output_file.rename(new_zip)
-                output_file = new_zip
+        with open(out_file, "rb") as f:
+            if f.read(4) == b"PK\x03\x04":
+                newz = out_file.with_suffix(".zip")
+                out_file.rename(newz)
+                out_file = newz
     except Exception:
         pass
 
-    # Estrai certificato PEM
-    cert_pem = output_dir / f"{payload_basename}_cert.pem"
-    cmd2 = ["openssl", "pkcs7", "-inform", "DER", "-in", str(p7m_file_path), "-print_certs", "-out", str(cert_pem)]
-    if subprocess.run(cmd2, capture_output=True).returncode != 0:
-        return output_file, "Sconosciuto", False
+    # Estrai certificato
+    cert_pem = output_dir / f"{base}_cert.pem"
+    cmd2 = ["openssl", "pkcs7", "-inform", "DER", "-in", str(p7m_path), "-print_certs", "-out", str(cert_pem)]
+    subprocess.run(cmd2, capture_output=True)
 
-    # Leggi subject e dates
+    # Leggi subject e validity
     cmd3 = ["openssl", "x509", "-in", str(cert_pem), "-noout", "-subject", "-dates"]
     proc = subprocess.run(cmd3, capture_output=True, text=True)
     cert_pem.unlink(missing_ok=True)
-    if proc.returncode != 0:
-        return output_file, "Sconosciuto", False
-
-    txt = proc.stdout
     signer = "Sconosciuto"
-    for rdn in ["CN", "emailAddress"]:
-        m = re.search(rf"{rdn}=([^,/]+)", txt)
-        if m:
-            signer = m.group(1).strip()
-            break
+    if proc.returncode == 0:
+        txt = proc.stdout
+        for rdn in ["CN", "emailAddress"]:
+            m = re.search(rf"{rdn}=([^,/]+)", txt)
+            if m:
+                signer = m.group(1).strip()
+                break
+        def pd(s): return datetime.strptime(s.strip(), "%b %d %H:%M:%S %Y %Z")
+        lines = txt.splitlines()
+        nb = next(l for l in lines if "notBefore" in l).split("=",1)[1]
+        na = next(l for l in lines if "notAfter" in l).split("=",1)[1]
+        valid = pd(nb) <= datetime.utcnow() <= pd(na)
+    else:
+        valid = False
 
-    def parse_date(s: str) -> datetime:
-        return datetime.strptime(s.strip(), "%b %d %H:%M:%S %Y %Z")
-    lines = txt.splitlines()
-    nb = next(l for l in lines if "notBefore" in l).split("=",1)[1]
-    na = next(l for l in lines if "notAfter" in l).split("=",1)[1]
-    valid = parse_date(nb) <= datetime.utcnow() <= parse_date(na)
+    return out_file, signer, valid
 
-    return output_file, signer, valid
-
-# --- Unpack ricorsivo con pulizia _unzipped -------------------------------
-def recursive_unpack_and_flatten(directory: Path):
-    for archive_path in list(directory.rglob("*.zip")):
-        if not archive_path.is_file():
+# --- Unpack ricorsivo con pulizia wrapper -------------------------------
+def recursive_unpack(directory: Path):
+    for z in list(directory.rglob("*.zip")):
+        if not z.is_file():
             continue
-        extract_folder = archive_path.parent / f"{archive_path.stem}_unzipped"
-        if extract_folder.exists():
-            shutil.rmtree(extract_folder)
-        extract_folder.mkdir()
+        tgt = z.parent / f"{z.stem}_unzipped"
+        if tgt.exists(): shutil.rmtree(tgt)
+        tgt.mkdir()
         try:
-            with zipfile.ZipFile(archive_path, "r") as zf:
-                zf.extractall(extract_folder)
-        except Exception:
-            archive_path.unlink(missing_ok=True)
+            with zipfile.ZipFile(z, 'r') as zf:
+                zf.extractall(tgt)
+        except:
+            z.unlink(missing_ok=True)
             continue
-        archive_path.unlink(missing_ok=True)
-        items = list(extract_folder.iterdir())
-        if len(items)==1 and items[0].is_dir():
-            for it in items[0].iterdir(): shutil.move(str(it), str(extract_folder))
-            items[0].rmdir()
-        recursive_unpack_and_flatten(extract_folder)
+        z.unlink()
+        # se unico subfolder, sposta
+        subs = list(tgt.iterdir())
+        if len(subs)==1 and subs[0].is_dir():
+            for f in subs[0].iterdir(): shutil.move(str(f), str(tgt))
+            subs[0].rmdir()
+        recursive_unpack(tgt)
 
-# --- Processa .p7m in directory ------------------------------------------
-def process_directory_for_p7m(directory: Path, log_root: str):
+# --- Processa .p7m in dir ------------------------------------------------
+def process_dir(directory: Path, prefix: str):
     for p7m in directory.rglob("*.p7m"):
         rel = p7m.relative_to(directory)
-        st.write(f"{log_root} · {rel.parent}: {p7m.name}")
+        st.write(f"{prefix} · {rel.parent}: {p7m.name}")
         payload, signer, valid = extract_signed_content(p7m, p7m.parent)
         p7m.unlink(missing_ok=True)
         if not payload:
             continue
-        if payload.suffix.lower()==".zip":
-            recursive_unpack_and_flatten(payload.parent)
+        if payload.suffix == ".zip":
+            recursive_unpack(payload.parent)
             sub = payload.parent / payload.stem
-            if sub.is_dir(): process_directory_for_p7m(sub, log_root+"  ")
-            if payload and payload.exists(): payload.unlink()
-        c1, c2 = st.columns([4, 1])
+            if sub.is_dir(): process_dir(sub, prefix+"  ")
+            if payload.exists(): payload.unlink()
+        c1, c2 = st.columns([4,1])
         with c1:
             st.write(f"– Estratto: **{payload.name}**")
             st.write(f"  Firmato da: **{signer}**")
@@ -120,37 +111,47 @@ def process_directory_for_p7m(directory: Path, log_root: str):
             if valid: st.success("Firma valida ✅")
             else:     st.error("Firma NON valida ⚠️")
 
-# --- Streamlit: upload e ZIP finale --------------------------------------
+# --- Streamlit UI e ZIP finale ------------------------------------------
 output_name = st.text_input("Nome ZIP output:", "all_extracted.zip")
-if not output_name.lower().endswith(".zip"): output_name+='.zip'
-uploaded_files = st.file_uploader("Carica .zip o .p7m", accept_multiple_files=True)
-if uploaded_files:
-    root_temp = Path(tempfile.mkdtemp(prefix="combined_"))
-    for up in uploaded_files:
-        tmp = Path(tempfile.mkdtemp(prefix="up_")); fpath=tmp/up.name; fpath.write_bytes(up.getbuffer()); ext=fpath.suffix.lower()
-        if ext==".zip":
-            with zipfile.ZipFile(fpath) as zf: zf.extractall(tmp)
-            recursive_unpack_and_flatten(tmp)
+if not output_name.lower().endswith(".zip"): output_name += ".zip"
+uploaded = st.file_uploader("Carica .zip o .p7m", accept_multiple_files=True)
+if uploaded:
+    root = Path(tempfile.mkdtemp(prefix="combined_"))
+    for uf in uploaded:
+        tmp = Path(tempfile.mkdtemp(prefix="up_"))
+        fpath = tmp/uf.name; fpath.write_bytes(uf.getbuffer())
+        if fpath.suffix == ".zip":
+            with zipfile.ZipFile(fpath,'r') as zf: zf.extractall(tmp)
+            recursive_unpack(tmp)
             for d in tmp.iterdir():
-                if d.is_dir(): shutil.copytree(d, root_temp/d.name, dirs_exist_ok=True)
-        elif ext==".p7m": extract_signed_content(fpath, root_temp)
+                if d.is_dir(): shutil.copytree(d, root/d.name, dirs_exist_ok=True)
+        elif fpath.suffix == ".p7m":
+            extract_signed_content(fpath, root)
         shutil.rmtree(tmp, ignore_errors=True)
 
-    for d in root_temp.iterdir():
-        if d.is_dir(): process_directory_for_p7m(d, d.name)
+    for d in root.iterdir():
+        if d.is_dir(): process_dir(d, d.name)
 
-    out_folder=Path(tempfile.mkdtemp(prefix="out_")); zip_out=out_folder/output_name
-    with zipfile.ZipFile(zip_out,'w',ZIP_DEFLATED=zipfile.ZIP_DEFLATED) as zf:
-        for base,dirs,files in os.walk(root_temp):
-            dirs[:] = [d for d in dirs if not d.endswith("_unzipped")]
-            for f in files:
-                fp=Path(base)/f; zf.write(fp, fp.relative_to(root_temp).as_posix())
+    # ZIP finale escludendo wrapper
+    outd = Path(tempfile.mkdtemp(prefix="out_"))
+    zipf = zipfile.ZipFile(outd/output_name,'w',compression=zipfile.ZIP_DEFLATED)
+    for base,dirs,files in os.walk(root):
+        dirs[:] = [d for d in dirs if not d.endswith("_unzipped")]
+        for f in files:
+            p = Path(base)/f
+            zipf.write(p, p.relative_to(root).as_posix())
+    zipf.close()
 
-    with open(zip_out,'rb') as f: st.download_button("Scarica ZIP",data=f,file_name=output_name,mime="application/zip")
+    # download
+    with open(outd/output_name,'rb') as f:
+        st.download_button("Scarica ZIP", data=f, file_name=output_name, mime="application/zip")
+
+    # anteprima
     st.subheader("Anteprima struttura ZIP")
-    with zipfile.ZipFile(zip_out) as preview:
-        paths=[info.filename for info in preview.infolist()]
-    df=pd.DataFrame([p.split("/") for p in paths])
-    df.columns=[f"Livello {i+1}" for i in range(df.shape[1])] 
-    for c in df.columns: df[c]=df[c].mask(df[c]==df[c].shift(),"")
+    with zipfile.ZipFile(outd/output_name,'r') as pf:
+        paths = [i.filename for i in pf.infolist()]
+    rows = [p.split("/") for p in paths]
+    df = pd.DataFrame(rows)
+    df.columns = [f"Livello {i+1}" for i in range(df.shape[1])]
+    for c in df.columns: df[c] = df[c].mask(df[c]==df[c].shift(),"")
     st.table(df)
