@@ -7,6 +7,7 @@ import shutil
 from pathlib import Path
 from datetime import datetime
 import re
+import pandas as pd
 from PIL import Image
 
 # --- Layout con logo a destra ---------------------------------------------
