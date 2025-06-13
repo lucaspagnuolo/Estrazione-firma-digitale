@@ -18,6 +18,7 @@ with col2:
     logo = Image.open("img/Consip_Logo.png")
     st.image(logo, width=300)
 
+# --- Funzione che esegue “openssl cms -verify” e legge il certificato -----
 def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path | None, str, bool]:
     payload_basename = p7m_file_path.stem
     output_file = output_dir / payload_basename
