@@ -126,6 +126,7 @@ def process_directory_for_p7m(directory: Path, log_root: str):
             sub = payload.parent / payload.stem
             if sub.is_dir():
                 process_directory_for_p7m(sub, log_root + "  ")
+            if payload and payload.exists():
             payload.unlink()
         c1, c2 = st.columns([4, 1])
         with c1:
