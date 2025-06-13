@@ -158,6 +158,35 @@ def cleanup_extra_zip_named_dirs(root_dir: Path):
             if sib.is_dir():
                 shutil.rmtree(d, ignore_errors=True)
 
+# --- Nuova funzione per rimuovere cartelle *_unzipped di wrapper ---
+def cleanup_unzipped_wrappers(root_dir: Path):
+    """
+    Sposta il contenuto delle cartelle che terminano con '_unzipped' nella loro parent e rimuove la cartella wrapper.
+    """
+    for d in list(root_dir.rglob('*_unzipped')):
+        if d.is_dir():
+            items = list(d.iterdir())
+            for it in items:
+                # Evitiamo sovrascritture
+                destination = d.parent / it.name
+                if destination.exists():
+                    # se è directory, unisci
+                    if it.is_dir():
+                        for sub in it.iterdir():
+                            shutil.move(str(sub), str(destination))
+                    else:
+                        shutil.move(str(it), str(d.parent))
+                else:
+                    shutil.move(str(it), str(d.parent))
+            shutil.rmtree(d)
+
+# --- Streamlit: upload multiplo, creazione cartelle temporanee------------- -------------    # puoi commentare temporaneamente per debug
+    for d in sorted((p for p in root_dir.rglob("*") if p.is_dir()), key=lambda d: len(str(d).split(os.sep)), reverse=True):
+        if d.name.lower().endswith("zip"):
+            sib = d.parent / d.name[:-3]
+            if sib.is_dir():
+                shutil.rmtree(d, ignore_errors=True)
+
 # --- Funzione principale per processare .p7m in una directory -------------
 def process_directory_for_p7m(directory: Path, log_root: str):
     for p7m in list(directory.rglob("*.p7m")):
