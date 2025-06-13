@@ -172,10 +172,6 @@ if uploaded:
             zipf.write(p, p.relative_to(root).as_posix())
     zipf.close()
 
-    # download
-    with open(outd/output_name,'rb') as f:
-        st.download_button("Scarica ZIP", data=f, file_name=output_name, mime="application/zip")
-
     # anteprima
     st.subheader("Anteprima struttura ZIP")
     with zipfile.ZipFile(outd/output_name,'r') as pf:
@@ -185,3 +181,7 @@ if uploaded:
     df.columns = [f"Livello {i+1}" for i in range(df.shape[1])]
     for c in df.columns: df[c] = df[c].mask(df[c]==df[c].shift(),"")
     st.table(df)
+
+    # download
+    with open(outd/output_name,'rb') as f:
+        st.download_button("Scarica ZIP", data=f, file_name=output_name, mime="application/zip")
