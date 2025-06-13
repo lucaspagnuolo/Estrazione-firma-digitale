@@ -210,15 +210,18 @@ if uploaded_files:
             target = root_temp / zp.stem
             shutil.copytree(base, target)
 
-            # DEBUG: elenco file in target
-            st.write(f"Contenuto di {target}:")
+            # Processamento .p7m
+            process_directory_for_p7m(target, zp.stem)
+            # Esegui cleanup
+            cleanup_unprocessed_p7m_dirs(target)
+            cleanup_extra_zip_named_dirs(target)
+
+            # DEBUG: elenco file in target dopo estrazione e cleanup
+            st.write(f"Post-process di {target}:")
             for p in target.rglob('*'):
                 if p.is_file():
                     st.write(f"  • {p.relative_to(target)}")
 
-            process_directory_for_p7m(target, zp.stem)
-            #cleanup_unprocessed_p7m_dirs(target)
-            #cleanup_extra_zip_named_dirs(target)
             shutil.rmtree(tmp, ignore_errors=True)
 
         elif ext == ".p7m":
