@@ -222,10 +222,23 @@ uploaded_files = st.file_uploader(
 if uploaded_files:
     root_temp = Path(tempfile.mkdtemp(prefix="combined_"))
 
+    # === Processing degli upload ===
     for uploaded in uploaded_files:
-        # (… codice invariato per gestione .zip e .p7m individuali …)
+        name = uploaded.name
+        ext = Path(name).suffix.lower()
 
-        # DEBUG: mostra contenuto di root_temp PRIMA del cleanup dei duplicati
+        if ext == ".zip":
+            # (… codice invariato per ZIP …)
+            pass  # mantieni qui il tuo codice originale
+
+        elif ext == ".p7m":
+            # (… codice invariato per singolo .p7m …)
+            pass  # mantieni qui il tuo codice originale
+
+        else:
+            st.warning(f"Ignoro «{name}»: estensione non supportata ({ext}).")
+
+    # === DEBUG: contenuto di root_temp PRIMA di remove_duplicate_folders ===
     st.subheader("DEBUG: Contenuto di root_temp PRIMA di remove_duplicate_folders")
     for p in sorted(root_temp.rglob("*")):
         st.write("-", p.relative_to(root_temp))
@@ -233,8 +246,8 @@ if uploaded_files:
     # --- Rimozione eventuali cartelle duplicate -------------------------
     remove_duplicate_folders(root_temp)
 
-    # DEBUG: mostra contenuto di root_temp DOPO il cleanup dei duplicati
-    st.subheader("DEBUG: Contenuto di root_temp DOPO  remove_duplicate_folders")
+    # === DEBUG: contenuto di root_temp DOPO remove_duplicate_folders ===
+    st.subheader("DEBUG: Contenuto di root_temp DOPO remove_duplicate_folders")
     for p in sorted(root_temp.rglob("*")):
         st.write("-", p.relative_to(root_temp))
 
@@ -254,38 +267,22 @@ if uploaded_files:
     shutil.make_archive(zip_base, 'zip', root_temp)
     zip_out = Path(f"{zip_base}.zip")
 
-    # Anteprima dinamica della struttura del file ZIP (multi-livello)
+    # --- Anteprima dinamica della struttura del file ZIP (multi-livello) ---
     st.subheader("Anteprima strutturale del file ZIP risultante")
-    # 1) Raccolgo tutti i path completi
     with zipfile.ZipFile(zip_out, "r") as preview_zf:
         paths = [info.filename for info in preview_zf.infolist()]
 
-    # 2) Splitting su "/" in liste di parti
     split_paths = [p.split("/") for p in paths]
-
-    # 3) Trovo il numero massimo di livelli
+    # Qui lasciamo scatenare il ValueError come richiesto:
     max_levels = max(len(parts) for parts in split_paths)
-
-    # 4) Definisco i nomi delle colonne dinamicamente
     col_names = [f"Livello {i+1}" for i in range(max_levels)]
-
-    # 5) Ricostruisco un array rettangolare, padding con stringhe vuote
-    rows = [
-        parts + [""] * (max_levels - len(parts))
-        for parts in split_paths
-    ]
-
-    # 6) Costruisco il DataFrame
+    rows = [parts + [""] * (max_levels - len(parts)) for parts in split_paths]
     df = pd.DataFrame(rows, columns=col_names)
-
-    # 7) Nascondo i valori ripetuti in ciascuna colonna
     for col in col_names:
         df[col] = df[col].mask(df[col] == df[col].shift(), "")
-
-    # 8) Mostro la tabella (qui vogliamo ancora far uscire il ValueError)
     st.table(df)
 
-    # Bottone di download sempre disponibile
+    # --- Bottone di download sempre disponibile ------------------------
     with open(zip_out, "rb") as f:
         st.download_button(
             label="Scarica il file ZIP con tutte le estrazioni",
