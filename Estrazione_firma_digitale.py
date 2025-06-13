@@ -225,7 +225,7 @@ if uploaded_files:
     for uploaded in uploaded_files:
         # (… codice invariato per gestione .zip e .p7m individuali …)
 
-    # DEBUG: mostra contenuto di root_temp PRIMA del cleanup dei duplicati
+        # DEBUG: mostra contenuto di root_temp PRIMA del cleanup dei duplicati
     st.subheader("DEBUG: Contenuto di root_temp PRIMA di remove_duplicate_folders")
     for p in sorted(root_temp.rglob("*")):
         st.write("-", p.relative_to(root_temp))
