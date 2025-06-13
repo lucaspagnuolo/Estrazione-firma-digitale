@@ -222,34 +222,78 @@ uploaded_files = st.file_uploader(
 if uploaded_files:
     root_temp = Path(tempfile.mkdtemp(prefix="combined_"))
 
-    # === Processing degli upload ===
     for uploaded in uploaded_files:
         name = uploaded.name
         ext = Path(name).suffix.lower()
 
         if ext == ".zip":
-            # (… codice invariato per ZIP …)
-            pass  # mantieni qui il tuo codice originale
+            st.write(f"🔄 Rilevato file ZIP: {name}")
+            tmp = Path(tempfile.mkdtemp(prefix="zip_unpack_"))
+            zp = tmp / name
+            with open(zp, "wb") as f:
+                f.write(uploaded.getbuffer())
+
+            try:
+                with zipfile.ZipFile(zp, "r") as zf:
+                    inner_zips = [n for n in zf.namelist() if n.lower().endswith(".zip")]
+                    if len(inner_zips) == 1:
+                        inner = inner_zips[0]
+                        data = zf.read(inner)
+                        target_inner = tmp / Path(inner).name
+                        target_inner.write_bytes(data)
+                        with zipfile.ZipFile(target_inner, "r") as inner_zf:
+                            inner_zf.extractall(tmp)
+                        zp = target_inner
+                    else:
+                        zf.extractall(tmp)
+            except (zipfile.BadZipFile, EOFError) as e:
+                st.error(f"Errore estrazione ZIP «{name}»: {e}")
+                shutil.rmtree(tmp, ignore_errors=True)
+                continue
+
+            recursive_unpack_and_flatten(tmp)
+            target = root_temp / zp.stem
+            shutil.copytree(tmp, target)
+            process_directory_for_p7m(target, zp.stem)
+            cleanup_unprocessed_p7m_dirs(target)
+            cleanup_extra_zip_named_dirs(target)
+            shutil.rmtree(tmp, ignore_errors=True)
 
         elif ext == ".p7m":
-            # (… codice invariato per singolo .p7m …)
-            pass  # mantieni qui il tuo codice originale
+            st.write(f"🔄 Rilevato file .p7m: {name}")
+            tmp = Path(tempfile.mkdtemp(prefix="single_p7m_"))
+            p7m_path = tmp / name
+            with open(p7m_path, "wb") as f:
+                f.write(uploaded.getbuffer())
+
+            payload, signer, valid = extract_signed_content(p7m_path, root_temp)
+            if payload:
+                p7m_path.unlink(missing_ok=True)
+                if payload.suffix.lower() == ".zip":
+                    recursive_unpack_and_flatten(root_temp)
+                    for d in root_temp.iterdir():
+                        if d.is_dir():
+                            process_directory_for_p7m(d, d.name)
+                    cleanup_unprocessed_p7m_dirs(root_temp)
+                    cleanup_extra_zip_named_dirs(root_temp)
+                    payload.unlink(missing_ok=True)
+
+                c1, c2 = st.columns([4, 1])
+                with c1:
+                    st.write(f"  – File estratto: **{payload.name}**")
+                    st.write(f"    Firmato da: **{signer}**")
+                with c2:
+                    if valid:
+                        st.success("Firma valida ✅")
+                    else:
+                        st.error("Firma NON valida ⚠️")
+
+            shutil.rmtree(tmp, ignore_errors=True)
 
         else:
             st.warning(f"Ignoro «{name}»: estensione non supportata ({ext}).")
 
-    # === DEBUG: contenuto di root_temp PRIMA di remove_duplicate_folders ===
-    st.subheader("DEBUG: Contenuto di root_temp PRIMA di remove_duplicate_folders")
-    for p in sorted(root_temp.rglob("*")):
-        st.write("-", p.relative_to(root_temp))
-
-    # --- Rimozione eventuali cartelle duplicate -------------------------
     remove_duplicate_folders(root_temp)
-
-    # === DEBUG: contenuto di root_temp DOPO remove_duplicate_folders ===
-    st.subheader("DEBUG: Contenuto di root_temp DOPO remove_duplicate_folders")
-    for p in sorted(root_temp.rglob("*")):
-        st.write("-", p.relative_to(root_temp))
 
     # --- DEBUG: lista file prima di creare ZIP ------------------------
     st.write("📦 File che sto per mettere dentro l'archivio:")
@@ -267,22 +311,38 @@ if uploaded_files:
     shutil.make_archive(zip_base, 'zip', root_temp)
     zip_out = Path(f"{zip_base}.zip")
 
-    # --- Anteprima dinamica della struttura del file ZIP (multi-livello) ---
+    # Anteprima dinamica della struttura del file ZIP (multi-livello)
     st.subheader("Anteprima strutturale del file ZIP risultante")
+    # 1) Raccolgo tutti i path completi
     with zipfile.ZipFile(zip_out, "r") as preview_zf:
         paths = [info.filename for info in preview_zf.infolist()]
 
+    # 2) Splitting su "/" in liste di parti
     split_paths = [p.split("/") for p in paths]
-    # Qui lasciamo scatenare il ValueError come richiesto:
+
+    # 3) Trovo il numero massimo di livelli
     max_levels = max(len(parts) for parts in split_paths)
+
+    # 4) Definisco i nomi delle colonne dinamicamente
     col_names = [f"Livello {i+1}" for i in range(max_levels)]
-    rows = [parts + [""] * (max_levels - len(parts)) for parts in split_paths]
+
+    # 5) Ricostruisco un array rettangolare, padding con stringhe vuote
+    rows = [
+        parts + [""] * (max_levels - len(parts))
+        for parts in split_paths
+    ]
+
+    # 6) Costruisco il DataFrame
     df = pd.DataFrame(rows, columns=col_names)
+
+    # 7) Nascondo i valori ripetuti in ciascuna colonna
     for col in col_names:
         df[col] = df[col].mask(df[col] == df[col].shift(), "")
+
+    # 8) Mostro la tabella
     st.table(df)
 
-    # --- Bottone di download sempre disponibile ------------------------
+# Bottone di download sempre disponibile
     with open(zip_out, "rb") as f:
         st.download_button(
             label="Scarica il file ZIP con tutte le estrazioni",
