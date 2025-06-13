@@ -23,7 +23,7 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
     payload_basename = p7m_file_path.stem
     output_file = output_dir / payload_basename
 
-    # 1) Estraggo il payload
+    # Estrai payload
     cmd = [
         "openssl", "cms", "-verify",
         "-in", str(p7m_file_path),
@@ -36,7 +36,7 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
         st.error(f"Errore estrazione {p7m_file_path.name}: {res.stderr.decode().strip()}")
         return None, "", False
 
-    # 2) Rinomino immediatamente se è ZIP valido
+    # Rinomina immediato se ZIP
     try:
         with open(output_file, "rb") as f:
             if f.read(4).startswith(b"PK\x03\x04"):
@@ -46,26 +46,14 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
     except Exception:
         pass
 
-    # 3) Estraggo il certificato in PEM
+    # Estrai certificato PEM
     cert_pem = output_dir / f"{payload_basename}_cert.pem"
-    cmd2 = [
-        "openssl", "pkcs7",
-        "-inform", "DER",
-        "-in", str(p7m_file_path),
-        "-print_certs",
-        "-out", str(cert_pem)
-    ]
+    cmd2 = ["openssl", "pkcs7", "-inform", "DER", "-in", str(p7m_file_path), "-print_certs", "-out", str(cert_pem)]
     if subprocess.run(cmd2, capture_output=True).returncode != 0:
         return output_file, "Sconosciuto", False
 
-    # 4) Leggo subject e date di validità
-    cmd3 = [
-        "openssl", "x509",
-        "-in", str(cert_pem),
-        "-noout",
-        "-subject",
-        "-dates"
-    ]
+    # Leggi subject e dates
+    cmd3 = ["openssl", "x509", "-in", str(cert_pem), "-noout", "-subject", "-dates"]
     proc = subprocess.run(cmd3, capture_output=True, text=True)
     cert_pem.unlink(missing_ok=True)
     if proc.returncode != 0:
@@ -105,11 +93,9 @@ def recursive_unpack_and_flatten(directory: Path):
             continue
         archive_path.unlink(missing_ok=True)
         items = list(extract_folder.iterdir())
-        if len(items) == 1 and items[0].is_dir():
-            for it in items[0].iterdir():
-                shutil.move(str(it), str(extract_folder))
+        if len(items)==1 and items[0].is_dir():
+            for it in items[0].iterdir(): shutil.move(str(it), str(extract_folder))
             items[0].rmdir()
-        # ricorsione
         recursive_unpack_and_flatten(extract_folder)
 
 # --- Processa .p7m in directory ------------------------------------------
@@ -121,78 +107,50 @@ def process_directory_for_p7m(directory: Path, log_root: str):
         p7m.unlink(missing_ok=True)
         if not payload:
             continue
-        if payload.suffix.lower() == ".zip":
+        if payload.suffix.lower()==".zip":
             recursive_unpack_and_flatten(payload.parent)
             sub = payload.parent / payload.stem
-            if sub.is_dir():
-                process_directory_for_p7m(sub, log_root + "  ")
-            # elimina il file ZIP intermedio se esiste ancora
-            if payload and payload.exists():
-                payload.unlink()
-        c1, c2 = st.columns([4, 1])([4, 1])
+            if sub.is_dir(): process_directory_for_p7m(sub, log_root+"  ")
+            if payload and payload.exists(): payload.unlink()
+        c1, c2 = st.columns([4, 1])
         with c1:
             st.write(f"– Estratto: **{payload.name}**")
             st.write(f"  Firmato da: **{signer}**")
         with c2:
-            if valid:
-                st.success("Firma valida ✅")
-            else:
-                st.error("Firma NON valida ⚠️")
+            if valid: st.success("Firma valida ✅")
+            else:     st.error("Firma NON valida ⚠️")
 
 # --- Streamlit: upload e ZIP finale --------------------------------------
 output_name = st.text_input("Nome ZIP output:", "all_extracted.zip")
-if not output_name.lower().endswith(".zip"):
-    output_name += ".zip"
-
-uploaded_files = st.file_uploader("Carica file .zip o .p7m", accept_multiple_files=True)
+if not output_name.lower().endswith(".zip"): output_name+='.zip'
+uploaded_files = st.file_uploader("Carica .zip o .p7m", accept_multiple_files=True)
 if uploaded_files:
     root_temp = Path(tempfile.mkdtemp(prefix="combined_"))
-    # estrazione iniziale
-    for uploaded in uploaded_files:
-        tmp = Path(tempfile.mkdtemp(prefix="up_"))
-        fpath = tmp / uploaded.name
-        fpath.write_bytes(uploaded.getbuffer())
-        ext = fpath.suffix.lower()
-        if ext == ".zip":
-            with zipfile.ZipFile(fpath, "r") as zf:
-                zf.extractall(tmp)
+    for up in uploaded_files:
+        tmp = Path(tempfile.mkdtemp(prefix="up_")); fpath=tmp/up.name; fpath.write_bytes(up.getbuffer()); ext=fpath.suffix.lower()
+        if ext==".zip":
+            with zipfile.ZipFile(fpath) as zf: zf.extractall(tmp)
             recursive_unpack_and_flatten(tmp)
             for d in tmp.iterdir():
-                if d.is_dir():
-                    shutil.copytree(d, root_temp / d.name, dirs_exist_ok=True)
-        elif ext == ".p7m":
-            extract_signed_content(fpath, root_temp)
+                if d.is_dir(): shutil.copytree(d, root_temp/d.name, dirs_exist_ok=True)
+        elif ext==".p7m": extract_signed_content(fpath, root_temp)
         shutil.rmtree(tmp, ignore_errors=True)
 
-    # processing e firma
     for d in root_temp.iterdir():
-        if d.is_dir():
-            process_directory_for_p7m(d, d.name)
+        if d.is_dir(): process_directory_for_p7m(d, d.name)
 
-    # creazione ZIP finale escludendo wrapper _unzipped
-    out_folder = Path(tempfile.mkdtemp(prefix="out_"))
-    zip_out = out_folder / output_name
-    with zipfile.ZipFile(zip_out, "w", zipfile.ZIP_DEFLATED) as zf:
-        for base, dirs, files in os.walk(root_temp):
+    out_folder=Path(tempfile.mkdtemp(prefix="out_")); zip_out=out_folder/output_name
+    with zipfile.ZipFile(zip_out,'w',ZIP_DEFLATED=zipfile.ZIP_DEFLATED) as zf:
+        for base,dirs,files in os.walk(root_temp):
             dirs[:] = [d for d in dirs if not d.endswith("_unzipped")]
             for f in files:
-                fp = Path(base) / f
-                rel = fp.relative_to(root_temp)
-                zf.write(fp, rel.as_posix())
-    
-    # download
-    with open(zip_out, "rb") as f:
-        st.download_button("Scarica ZIP", data=f, file_name=output_name, mime="application/zip")
+                fp=Path(base)/f; zf.write(fp, fp.relative_to(root_temp).as_posix())
 
-    # anteprima struttura
+    with open(zip_out,'rb') as f: st.download_button("Scarica ZIP",data=f,file_name=output_name,mime="application/zip")
     st.subheader("Anteprima struttura ZIP")
-    with zipfile.ZipFile(zip_out, "r") as preview_zf:
-        paths = [info.filename for info in preview_zf.infolist()]
-    split_paths = [p.split("/") for p in paths]
-    max_levels = max(len(parts) for parts in split_paths)
-    col_names = [f"Livello {i+1}" for i in range(max_levels)]
-    rows = [parts + [""] * (max_levels - len(parts)) for parts in split_paths]
-    df = pd.DataFrame(rows, columns=col_names)
-    for col in col_names:
-        df[col] = df[col].mask(df[col] == df[col].shift(), "")
+    with zipfile.ZipFile(zip_out) as preview:
+        paths=[info.filename for info in preview.infolist()]
+    df=pd.DataFrame([p.split("/") for p in paths])
+    df.columns=[f"Livello {i+1}" for i in range(df.shape[1])] 
+    for c in df.columns: df[c]=df[c].mask(df[c]==df[c].shift(),"")
     st.table(df)
