@@ -158,7 +158,35 @@ def cleanup_extra_zip_named_dirs(root_dir: Path):
             if sib.is_dir():
                 shutil.rmtree(d, ignore_errors=True)
 
-# --- Streamlit: upload multiplo, creazione cartelle temporanee -------------
+# --- Funzione principale per processare .p7m in una directory -------------
+def process_directory_for_p7m(directory: Path, log_root: str):
+    for p7m in list(directory.rglob("*.p7m")):
+        rel = p7m.relative_to(directory)
+        st.write(f"{log_root} · Trovato .p7m in **{rel.parent}**: {p7m.name}")
+
+        payload, signer, valid = extract_signed_content(p7m, p7m.parent)
+        if not payload:
+            continue
+        p7m.unlink(missing_ok=True)
+
+        if payload.suffix.lower() == ".zip":
+            recursive_unpack_and_flatten(payload.parent)
+            new_dir = payload.parent / payload.stem
+            if new_dir.is_dir():
+                process_directory_for_p7m(new_dir, log_root + "  ")
+            payload.unlink(missing_ok=True)
+
+        c1, c2 = st.columns([4, 1])
+        with c1:
+            st.write(f"  – File estratto: **{payload.name}**")
+            st.write(f"    Firmato da: **{signer}**")
+        with c2:
+            if valid:
+                st.success("Firma valida ✅")
+            else:
+                st.error("Firma NON valida ⚠️")
+
+# --- Streamlit: upload multiplo, creazione cartelle temporanee------------- -------------
 output_name = st.text_input(
     "Nome del file ZIP di output (includi “.zip” o sarà aggiunto automaticamente):",
     value="all_extracted.zip"
