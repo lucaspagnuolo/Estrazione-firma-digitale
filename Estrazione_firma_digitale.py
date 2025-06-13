@@ -18,54 +18,83 @@ with col2:
     logo = Image.open("img/Consip_Logo.png")
     st.image(logo, width=300)
 
-# --- Funzione per estrarre payload e certificato --------------------------
-def extract_signed_content(p7m_path: Path, output_dir: Path) -> tuple[Path | None, str, bool]:
-    base = p7m_path.stem
-    out_file = output_dir / base
+def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path | None, str, bool]:
+    payload_basename = p7m_file_path.stem
+    output_file = output_dir / payload_basename
 
-    # Verifica payload
-    cmd = ["openssl", "cms", "-verify", "-in", str(p7m_path), "-inform", "DER", "-noverify", "-out", str(out_file)]
-    res = subprocess.run(cmd, capture_output=True)
-    if res.returncode != 0:
-        st.error(f"Errore estrazione {p7m_path.name}: {res.stderr.decode().strip()}")
+    # 1) Estraggo il payload
+    cmd1 = [
+        "openssl", "cms", "-verify",
+        "-in", str(p7m_file_path),
+        "-inform", "DER",
+        "-noverify",
+        "-out", str(output_file)
+    ]
+    res1 = subprocess.run(cmd1, capture_output=True)
+    if res1.returncode != 0:
+        st.error(f"Errore estrazione «{p7m_file_path.name}»: {res1.stderr.decode().strip()}")
         return None, "", False
 
-    # Rinomina ZIP
+    # 2) Estraggo il certificato in PEM
+    cert_pem_path = output_dir / (payload_basename + "_cert.pem")
+    cmd2 = [
+        "openssl", "pkcs7",
+        "-inform", "DER",
+        "-in", str(p7m_file_path),
+        "-print_certs",
+        "-out", str(cert_pem_path)
+    ]
+    res2 = subprocess.run(cmd2, capture_output=True)
+    if res2.returncode != 0:
+        st.error(f"Errore estrazione certificato da «{p7m_file_path.name}»: {res2.stderr.decode().strip()}")
+        return output_file, "Sconosciuto", False
+
+    # 3) Leggo subject e dates
+    cmd3 = [
+        "openssl", "x509",
+        "-in", str(cert_pem_path),
+        "-noout",
+        "-subject",
+        "-dates"
+    ]
+    res3 = subprocess.run(cmd3, capture_output=True, text=True)
+    if res3.returncode != 0:
+        st.error(f"Errore lettura info certificato da «{cert_pem_path.name}»: {res3.stderr.strip()}")
+        cert_pem_path.unlink(missing_ok=True)
+        return output_file, "Sconosciuto", False
+
+    cert_pem_path.unlink(missing_ok=True)
+    lines = res3.stdout.splitlines()
+    subject_text = "\n".join(lines)
+    signer_name = "Sconosciuto"
+    for rdn in ["CN", "SN", "UID", "emailAddress", "SERIALNUMBER"]:
+        m = re.search(rf"{rdn}\s*=\s*([^,/]+)", subject_text)
+        if m:
+            signer_name = m.group(1).strip()
+            break
+
+    def parse_openssl_date(date_str: str) -> datetime:
+        return datetime.strptime(date_str.strip(), "%b %d %H:%M:%S %Y %Z")
+
+    not_before_line = next(l for l in lines if "notBefore" in l)
+    not_after_line  = next(l for l in lines if "notAfter" in l)
+    not_before = parse_openssl_date(not_before_line.split("=", 1)[1])
+    not_after  = parse_openssl_date(not_after_line.split("=", 1)[1])
+    now = datetime.utcnow()
+    is_valid = (not_before <= now <= not_after)
+
+    # 4) Se è veramente uno ZIP, rinomino
     try:
-        with open(out_file, "rb") as f:
-            if f.read(4) == b"PK\x03\x04":
-                newz = out_file.with_suffix(".zip")
-                out_file.rename(newz)
-                out_file = newz
-    except Exception:
+        with open(output_file, "rb") as f:
+            hdr = f.read(4)
+        if hdr.startswith(b"PK\x03\x04"):
+            new_zip = output_file.with_suffix(".zip")
+            output_file.rename(new_zip)
+            output_file = new_zip
+    except:
         pass
 
-    # Estrai certificato
-    cert_pem = output_dir / f"{base}_cert.pem"
-    cmd2 = ["openssl", "pkcs7", "-inform", "DER", "-in", str(p7m_path), "-print_certs", "-out", str(cert_pem)]
-    subprocess.run(cmd2, capture_output=True)
-
-    # Leggi subject e validity
-    cmd3 = ["openssl", "x509", "-in", str(cert_pem), "-noout", "-subject", "-dates"]
-    proc = subprocess.run(cmd3, capture_output=True, text=True)
-    cert_pem.unlink(missing_ok=True)
-    signer = "Sconosciuto"
-    if proc.returncode == 0:
-        txt = proc.stdout
-        for rdn in ["CN", "emailAddress"]:
-            m = re.search(rf"{rdn}=([^,/]+)", txt)
-            if m:
-                signer = m.group(1).strip()
-                break
-        def pd(s): return datetime.strptime(s.strip(), "%b %d %H:%M:%S %Y %Z")
-        lines = txt.splitlines()
-        nb = next(l for l in lines if "notBefore" in l).split("=",1)[1]
-        na = next(l for l in lines if "notAfter" in l).split("=",1)[1]
-        valid = pd(nb) <= datetime.utcnow() <= pd(na)
-    else:
-        valid = False
-
-    return out_file, signer, valid
+    return output_file, signer_name, is_valid
 
 # --- Unpack ricorsivo con pulizia wrapper -------------------------------
 def recursive_unpack(directory: Path):
