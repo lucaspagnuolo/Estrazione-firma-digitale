@@ -204,47 +204,43 @@ if uploaded_files:
         if dir_unz.is_dir():
             shutil.rmtree(dir_unz, ignore_errors=True)
 
-    # Creazione ZIP di output (escludendo *_unz)
+    # Rimuovo TUTTI i file .p7m residui
+    for p7m_file in root_temp.rglob("*.p7m"):
+        p7m_file.unlink(missing_ok=True)
+
+    # Creazione ZIP di output (escludendo *_unz e *.p7m)
     out_dir = Path(tempfile.mkdtemp(prefix="zip_out_"))
     zip_path = out_dir / output_filename
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
         for path in root_temp.iterdir():
             if path.is_dir():
                 for file in path.rglob('*'):
-                    if file.is_file() and '_unz' not in file.parts:
+                    if file.is_file() and '_unz' not in file.parts and file.suffix.lower() != '.p7m':
                         zf.write(file, file.relative_to(root_temp))
             else:
-                zf.write(path, path.name)
+                if path.suffix.lower() != '.p7m':
+                    zf.write(path, path.name)
 
-    # Anteprima struttura ZIP risultante (filtri _unz)
-st.subheader("Anteprima struttura ZIP risultante")
-# Raccolgo tutti i percorsi esclusi quelli _unz
-with zipfile.ZipFile(zip_path) as zf:
-    paths = [info.filename for info in zf.infolist() if '_unz' not in info.filename]
-# Suddivido in livelli per tabella
-split_paths = [p.split("/") for p in paths]
-if split_paths:
-    max_levels = max(len(parts) for parts in split_paths)
-    col_names = [f"Livello {i+1}" for i in range(max_levels)]
-    rows = [parts + [""]*(max_levels - len(parts)) for parts in split_paths]
-    df = pd.DataFrame(rows, columns=col_names)
-    # Nascondo i duplicati consecutivi
-    for col in col_names:
-        df[col] = df[col].mask(df[col] == df[col].shift(), "")
-    st.table(df)
+    # Anteprima struttura ZIP risultante (filtri _unz e .p7m)
+    st.subheader("Anteprima struttura ZIP risultante")
+    with zipfile.ZipFile(zip_path) as zf:
+        paths = [info.filename for info in zf.infolist() if '_unz' not in info.filename and not info.filename.lower().endswith('.p7m')]
+    if paths:
+        split_paths = [p.split("/") for p in paths]
+        max_levels = max(len(parts) for parts in split_paths)
+        col_names = [f"Livello {i+1}" for i in range(max_levels)]
+        rows = [parts + [""]*(max_levels - len(parts)) for parts in split_paths]
+        df = pd.DataFrame(rows, columns=col_names)
+        for col in col_names:
+            df[col] = df[col].mask(df[col] == df[col].shift(), "")
+        st.table(df)
 
-# Download
-with open(zip_path, 'rb') as f:
-    st.download_button(
-        "Scarica file ZIP con estrazioni",
-        data=f,
-        file_name=output_filename,
-        mime="application/zip"
-    )
+    # Download (unico) con key per evitare duplicati
     with open(zip_path, 'rb') as f:
         st.download_button(
             "Scarica file ZIP con estrazioni",
             data=f,
             file_name=output_filename,
-            mime="application/zip"
+            mime="application/zip",
+            key="download_extracted_zip"
         )
