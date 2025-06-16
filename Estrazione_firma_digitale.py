@@ -147,10 +147,21 @@ if uploaded_files:
                 shutil.rmtree(tmp_dir, ignore_errors=True)
                 continue
             recursive_unpack_and_flatten(tmp_dir)
+            # Individua la directory base (evita doppio nesting)
+            possible = tmp_dir / file_path.stem
+            base_dir = possible if possible.is_dir() else tmp_dir
             target = root_temp / file_path.stem
-            # flatten directory: copia contenuti direttamente
-            shutil.copytree(tmp_dir, target)
+            shutil.rmtree(target, ignore_errors=True)
+            # Copia solo il contenuto della base_dir
+            target.mkdir()
+            for item in base_dir.iterdir():
+                dest = target / item.name
+                if item.is_dir():
+                    shutil.copytree(item, dest)
+                else:
+                    shutil.copy2(item, dest)
             process_p7m_dir(target)
+            shutil.rmtree(tmp_dir, ignore_errors=True)
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
         elif ext == ".p7m":
