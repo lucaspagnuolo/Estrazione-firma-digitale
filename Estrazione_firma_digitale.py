@@ -159,10 +159,11 @@ if uploaded_files:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
         elif ext == ".p7m":
+            tmp = tmp_dir
             payload, signer, valid = extract_signed_content(file_path, root_temp)
             if payload:
-                process_p7m_dir(root_temp)
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+                st.write(f"– Estratto: **{payload.name}** | Firmato da: **{signer}** | Validità: {'✅' if valid else '⚠️'}")
+            shutil.rmtree(tmp, ignore_errors=True)
         else:
             st.warning(f"Ignoro {name}: estensione non supportata")
 
@@ -173,12 +174,12 @@ if uploaded_files:
         for path in root_temp.iterdir():
             if path.is_dir():
                 for file in path.rglob('*'):
-                    if file.is_file() and not any(p.endswith('_unz') for p in file.parts):
+                    if file.is_file() and '_unz' not in file.parts:
                         zf.write(file, file.relative_to(root_temp))
             else:
                 zf.write(path, path.name)
 
-    # Anteprima struttura ZIP
+    # Anteprima struttura ZIP risultante
     st.subheader("Anteprima struttura ZIP risultante")
     with zipfile.ZipFile(zip_path) as zf:
         for info in zf.infolist():
