@@ -112,7 +112,6 @@ def process_p7m_dir(directory: Path, indent: str = ""):
         p7m.unlink(missing_ok=True)
         st.write(f"{indent}– Estratto: **{payload.name}** | Firmato da: **{signer}** | Validità: {'✅' if valid else '⚠️'}")
         if payload.suffix.lower() == ".zip":
-            # Estrazione iniziale con gestione singolo inner zip
             tmp = payload.parent
             try:
                 with zipfile.ZipFile(payload) as zf:
@@ -132,10 +131,8 @@ def process_p7m_dir(directory: Path, indent: str = ""):
             except Exception:
                 st.error(f"Errore estrazione ZIP interno di {payload.name}")
                 continue
-            # Scompattamento ricorsivo
             base = tmp
             recursive_unpack_and_flatten(base)
-            # Nuova directory
             new_dir = tmp / payload.stem
             if new_dir.is_dir():
                 process_p7m_dir(new_dir, indent + "  ")
@@ -161,7 +158,6 @@ if uploaded_files:
 
         if ext == ".zip":
             st.write(f"🔄 Rilevato ZIP: {name}")
-            # Gestione iniziale nested zip
             try:
                 with zipfile.ZipFile(file_path) as zf:
                     inner_zips = [n for n in zf.namelist() if n.lower().endswith('.zip')]
@@ -181,7 +177,6 @@ if uploaded_files:
                 continue
 
             recursive_unpack_and_flatten(base_dir)
-            # Copia in root_temp
             target = root_temp / file_path.stem
             shutil.rmtree(target, ignore_errors=True)
             shutil.copytree(base_dir, target)
@@ -210,11 +205,12 @@ if uploaded_files:
             else:
                 zf.write(path, path.name)
 
-    # Anteprima struttura ZIP risultante
+    # Anteprima struttura ZIP risultante (filtri _unz)
     st.subheader("Anteprima struttura ZIP risultante")
     with zipfile.ZipFile(zip_path) as zf:
         for info in zf.infolist():
-            st.write(info.filename)
+            if '_unz' not in info.filename:
+                st.write(info.filename)
 
     # Download
     with open(zip_path, 'rb') as f:
