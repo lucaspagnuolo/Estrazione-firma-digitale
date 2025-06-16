@@ -216,12 +216,18 @@ if uploaded_files:
             else:
                 zf.write(path, path.name)
 
-    # Anteprima struttura ZIP risultante (filtri _unz)
-    st.subheader("Anteprima struttura ZIP risultante")
-    with zipfile.ZipFile(zip_path) as zf:
-        for info in zf.infolist():
-            if '_unz' not in info.filename:
-                st.write(info.filename)
+    # Anteprima dinamica della struttura del file ZIP risultante
+    st.subheader("Anteprima strutturale del file ZIP risultante")
+    with zipfile.ZipFile(zip_out, "r") as preview_zf:
+        paths = [info.filename for info in preview_zf.infolist()]
+    split_paths = [p.split("/") for p in paths]
+    max_levels = max(len(parts) for parts in split_paths)
+    col_names = [f"Livello {i+1}" for i in range(max_levels)]
+    rows = [parts + [""] * (max_levels - len(parts)) for parts in split_paths]
+    df = pd.DataFrame(rows, columns=col_names)
+    for col in col_names:
+        df[col] = df[col].mask(df[col] == df[col].shift(), "")
+    st.table(df)
 
     # Download
     with open(zip_path, 'rb') as f:
