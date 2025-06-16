@@ -216,24 +216,31 @@ if uploaded_files:
             else:
                 zf.write(path, path.name)
 
-        # Anteprima struttura ZIP risultante (filtri _unz)
-    st.subheader("Anteprima struttura ZIP risultante")
-    # Raccolgo tutti i percorsi esclusi quelli _unz
-    with zipfile.ZipFile(zip_path) as zf:
-        paths = [info.filename for info in zf.infolist() if '_unz' not in info.filename]
-    # Suddivido in livelli per tabella
-    split_paths = [p.split("/") for p in paths]
-    if split_paths:
-        max_levels = max(len(parts) for parts in split_paths)
-        col_names = [f"Livello {i+1}" for i in range(max_levels)]
-        rows = [parts + [""]*(max_levels - len(parts)) for parts in split_paths]
-        df = pd.DataFrame(rows, columns=col_names)
-        # Nascondo i duplicati consecutivi
-        for col in col_names:
-            df[col] = df[col].mask(df[col] == df[col].shift(), "")
-        st.table(df)
+    # Anteprima struttura ZIP risultante (filtri _unz)
+st.subheader("Anteprima struttura ZIP risultante")
+# Raccolgo tutti i percorsi esclusi quelli _unz
+with zipfile.ZipFile(zip_path) as zf:
+    paths = [info.filename for info in zf.infolist() if '_unz' not in info.filename]
+# Suddivido in livelli per tabella
+split_paths = [p.split("/") for p in paths]
+if split_paths:
+    max_levels = max(len(parts) for parts in split_paths)
+    col_names = [f"Livello {i+1}" for i in range(max_levels)]
+    rows = [parts + [""]*(max_levels - len(parts)) for parts in split_paths]
+    df = pd.DataFrame(rows, columns=col_names)
+    # Nascondo i duplicati consecutivi
+    for col in col_names:
+        df[col] = df[col].mask(df[col] == df[col].shift(), "")
+    st.table(df)
 
-    # Download
+# Download
+with open(zip_path, 'rb') as f:
+    st.download_button(
+        "Scarica file ZIP con estrazioni",
+        data=f,
+        file_name=output_filename,
+        mime="application/zip"
+    )
     with open(zip_path, 'rb') as f:
         st.download_button(
             "Scarica file ZIP con estrazioni",
