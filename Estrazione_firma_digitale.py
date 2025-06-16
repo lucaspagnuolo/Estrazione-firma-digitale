@@ -228,7 +228,7 @@ if uploaded_files:
     if paths:
         split_paths = [p.split("/") for p in paths]
         max_levels = max(len(parts) for parts in split_paths)
-        col_names = [f"Livello {i+1}" for i in range(max_levels)]
+        col_names = [f"Liv {i+1}" for i in range(max_levels)]
         rows = [parts + [""]*(max_levels - len(parts)) for parts in split_paths]
         df = pd.DataFrame(rows, columns=col_names)
         for col in col_names:
