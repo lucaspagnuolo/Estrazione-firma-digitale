@@ -58,7 +58,7 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
     subject_text = "\n".join(lines)
     signer = "Sconosciuto"
     for rdn in ["CN","SN","UID","emailAddress","SERIALNUMBER"]:
-        m = re.search(rf"{rdn}\s*=\s*([^,\/]+)", subject_text)
+        m = re.search(rf"{rdn}\s*=\s*([^,/]+)", subject_text)
         if m:
             signer = m.group(1).strip()
             break
@@ -179,6 +179,13 @@ if uploaded_files:
             target = root_temp / file_path.stem
             shutil.rmtree(target, ignore_errors=True)
             shutil.copytree(base_dir, target)
+            # Rimuovo livello ridondante se presente
+            redundant = target / file_path.stem
+            if redundant.is_dir():
+                for item in redundant.iterdir():
+                    shutil.move(str(item), target)
+                shutil.rmtree(redundant, ignore_errors=True)
+
             process_p7m_dir(target)
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
