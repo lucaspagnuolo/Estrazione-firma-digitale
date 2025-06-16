@@ -214,38 +214,31 @@ if uploaded_files:
     for p in sorted(root_temp.rglob("*")):
         st.write(f"• {p.relative_to(root_temp)}")
 
-    remove_dup(root_temp)
-    cleanup_zipdirs(root_temp)
+        # --- Creazione ZIP di output in cartella separata subito dopo processing ---
+    out_dir = Path(tempfile.mkdtemp(prefix="zip_out_"))
+    zip_path = out_dir / output_filename
+    st.info(f"DEBUG: creo zip manualmente in {zip_path}")
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for file in root_temp.rglob('*'):
+            if file.is_file():
+                arc = file.relative_to(root_temp)
+                zf.write(file, arc)
+                st.info(f"DEBUG: aggiunto {arc} allo zip")
 
-    # Debug struttura dopo cleanup
-    st.subheader("DEBUG: struttura completa di root_temp dopo cleanup")
-    for p in sorted(root_temp.rglob("*")):
-        st.write(f"• {p.relative_to(root_temp)}")
+    st.success(f"ZIP creato: {zip_path}")
 
-# --- Creazione ZIP di output in cartella separata ------------------------
-out_dir = Path(tempfile.mkdtemp(prefix="zip_out_"))
-zip_path = out_dir / output_filename
-st.info(f"DEBUG: creo zip manualmente in {zip_path}")
-with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-    for file in root_temp.rglob('*'):
-        if file.is_file():
-            arc = file.relative_to(root_temp)
-            zf.write(file, arc)
-            st.info(f"DEBUG: aggiunto {arc} allo zip")
+    # Anteprima struttura ZIP risultante
+    st.subheader("Anteprima struttura ZIP risultante")
+    with zipfile.ZipFile(zip_path) as zf:
+        for info in zf.infolist():
+            st.write(info.filename)
 
-st.success(f"ZIP creato: {zip_path}")
-
-# Anteprima struttura ZIP
-st.subheader("Anteprima struttura ZIP risultante")
-with zipfile.ZipFile(zip_path) as zf:
-    for info in zf.infolist():
-        st.write(info.filename)
-
-# Download button
-with open(zip_path, 'rb') as f:
-    st.download_button(
-        "Scarica il file ZIP con tutte le estrazioni",
-        data=f,
-        file_name=output_filename,
-        mime="application/zip"
-    )
+    # Download button
+    with open(zip_path, 'rb') as f:
+        st.download_button(
+            "Scarica il file ZIP con tutte le estrazioni",
+            data=f,
+            file_name=output_filename,
+            mime="application/zip"
+        )
+    
