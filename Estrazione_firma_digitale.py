@@ -137,12 +137,8 @@ def recursive_unpack_and_flatten(directory: Path):
 
         recursive_unpack_and_flatten(extract_folder)
 
-# --- Funzioni di pulizia sicura per evitare cancellazioni errate ------------
+# --- Cleanup di cartelle con soli .p7m non processati --------------------
 def compare_directories_safe(dir1: Path, dir2: Path) -> bool:
-    """
-    Confronta due directory solo se dir2 è sottodirectory diretta di dir1.
-    Confronta solo i nomi dei file contenuti, non le sottocartelle.
-    """
     if dir2.parent != dir1:
         return False
     f1 = sorted(f.name for f in dir1.iterdir() if f.is_file())
@@ -151,10 +147,6 @@ def compare_directories_safe(dir1: Path, dir2: Path) -> bool:
 
 
 def remove_duplicate_folders_safe(root_dir: Path):
-    """
-    Rimuove solo le sottocartelle che hanno contenuto identico alla loro cartella genitore.
-    Non confronta cartelle arbitrariamente, solo sottocartelle dirette.
-    """
     for dp, dn, _ in os.walk(root_dir):
         dp_path = Path(dp)
         for d in dn:
@@ -162,60 +154,16 @@ def remove_duplicate_folders_safe(root_dir: Path):
             if p.is_dir() and compare_directories_safe(dp_path, p):
                 shutil.rmtree(p)
 
-# --- Funzione principale per processare .p7m in una directory -------------
-def process_directory_for_p7m(directory: Path, log_root: str):
-    for p7m in list(directory.rglob("*.p7m")):
-        rel = p7m.relative_to(directory)
-        st.write(f"{log_root} · Trovato .p7m in **{rel.parent}**: {p7m.name}")
-
-        payload, signer, valid = extract_signed_content(p7m, p7m.parent)
-        if not payload:
-            continue
-        p7m.unlink(missing_ok=True)
-
-        if payload.suffix.lower() == ".zip":
-            recursive_unpack_and_flatten(payload.parent)
-            new_dir = payload.parent / payload.stem
-            if new_dir.is_dir():
-                process_directory_for_p7m(new_dir, log_root + "  ")
-            payload.unlink(missing_ok=True)
-
-        c1, c2 = st.columns([4, 1])
-        with c1:
-            st.write(f"  – File estratto: **{payload.name}**")
-            st.write(f"    Firmato da: **{signer}**")
-        with c2:
-            if valid:
-                st.success("Firma valida ✅")
-            else:
-                st.error("Firma NON valida ⚠️")
-
-# --- Cleanup di cartelle con soli .p7m non processati --------------------
-def cleanup_unprocessed_p7m_dirs(root_dir: Path):
-    dirs = sorted(
-        (p for p in root_dir.rglob("*") if p.is_dir()),
-        key=lambda d: len(str(d).split(os.sep)),
-        reverse=True
-    )
-    for d in dirs:
-        files = [f for f in d.iterdir() if f.is_file()]
-        if files and all(f.suffix.lower() == ".p7m" for f in files):
-            for f in files:
-                f.unlink(missing_ok=True)
-            d.rmdir()
-
 # --- Cleanup di cartelle “*.zip” ridondanti -------------------------------
 def cleanup_extra_zip_named_dirs(root_dir: Path):
-    dirs = sorted(
-        (p for p in root_dir.rglob("*") if p.is_dir()),
-        key=lambda d: len(str(d).split(os.sep)),
-        reverse=True
-    )
-    for d in dirs:
-        if d.name.lower().endswith("zip"):
-            sib = d.parent / d.name[:-3]
-            if sib.is_dir():
-                shutil.rmtree(d, ignore_errors=True)
+    for dp, dn, _ in os.walk(root_dir):
+        dp_path = Path(dp)
+        for d in dn:
+            dir_path = dp_path / d
+            if dir_path.is_dir() and dir_path.name.lower().endswith("zip"):
+                sib = dp_path / dir_path.name[:-3]
+                if sib.is_dir():
+                    shutil.rmtree(dir_path, ignore_errors=True)
 
 # --- Streamlit: upload multiplo, creazione cartelle temporanee -------------
 output_name = st.text_input(
@@ -306,16 +254,15 @@ if uploaded_files:
     # Rimuovo cartelle duplicate in modo sicuro
     remove_duplicate_folders_safe(root_temp)
 
-    # Creo ZIP di output
-    zip_out = root_temp / output_filename
-    with zipfile.ZipFile(zip_out, "w", zipfile.ZIP_DEFLATED) as zf:
-        for root, _, files in os.walk(root_temp):
-            for f in files:
-                if f == output_filename:
-                    continue
-                fp = Path(root) / f
-                rp = fp.relative_to(root_temp)
-                zf.write(fp, rp)
+    # --- DEBUG: visualizzo struttura completa di root_temp ---
+    st.subheader("DEBUG: struttura completa dei file estratti")
+    for path in sorted(root_temp.rglob("*")):
+        st.write("•", path.relative_to(root_temp))
+
+    # --- Creo ZIP di output in cartella separata ----------------
+    out_dir = Path(tempfile.mkdtemp(prefix="zip_output_"))
+    zip_out = out_dir / output_filename
+    shutil.make_archive(str(zip_out.with_suffix("")), 'zip', str(root_temp))
 
     # Anteprima dinamica della struttura del file ZIP risultante
     st.subheader("Anteprima strutturale del file ZIP risultante")
