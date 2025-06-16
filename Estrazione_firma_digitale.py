@@ -20,154 +20,146 @@ with col2:
 
 # --- Funzione che esegue “openssl cms -verify” e legge il certificato -----
 def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path | None, str, bool]:
-    """
-    Estrae il payload di un .p7m, estrae il certificato (rimuovendo subito il .pem),
-    e ritorna (output_file, signer_name, is_valid). Se il payload risultante
-    è un vero ZIP (verificandone gli header), lo rinomina aggiungendo “.zip”.
-    """
     payload_basename = p7m_file_path.stem
     output_file = output_dir / payload_basename
 
     # 1) Estraggo il payload
-    cmd1 = [
+    st.info(f"DEBUG: eseguo openssl cms -verify su {p7m_file_path.name}")
+    res1 = subprocess.run([
         "openssl", "cms", "-verify",
-        "-in", str(p7m_file_path),
-        "-inform", "DER",
-        "-noverify",
-        "-out", str(output_file)
-    ]
-    res1 = subprocess.run(cmd1, capture_output=True)
+        "-in", str(p7m_file_path), "-inform", "DER",
+        "-noverify", "-out", str(output_file)
+    ], capture_output=True)
     if res1.returncode != 0:
         st.error(f"Errore estrazione «{p7m_file_path.name}»: {res1.stderr.decode().strip()}")
         return None, "", False
 
     # 2) Estraggo il certificato in PEM
-    cert_pem_path = output_dir / (payload_basename + "_cert.pem")
-    cmd2 = [
-        "openssl", "pkcs7",
-        "-inform", "DER",
-        "-in", str(p7m_file_path),
-        "-print_certs",
-        "-out", str(cert_pem_path)
-    ]
-    res2 = subprocess.run(cmd2, capture_output=True)
+    cert_pem = output_dir / f"{payload_basename}_cert.pem"
+    st.info(f"DEBUG: eseguo openssl pkcs7 -print_certs su {p7m_file_path.name}")
+    res2 = subprocess.run([
+        "openssl", "pkcs7", "-inform", "DER",
+        "-in", str(p7m_file_path), "-print_certs",
+        "-out", str(cert_pem)
+    ], capture_output=True)
     if res2.returncode != 0:
-        st.error(f"Errore estrazione certificato da «{p7m_file_path.name}»: {res2.stderr.decode().strip()}")
+        st.error(f"Errore estrazione cert da «{p7m_file_path.name}»: {res2.stderr.decode().strip()}")
         return output_file, "Sconosciuto", False
 
     # 3) Leggo subject e dates
-    cmd3 = [
-        "openssl", "x509",
-        "-in", str(cert_pem_path),
-        "-noout",
-        "-subject",
-        "-dates"
-    ]
-    res3 = subprocess.run(cmd3, capture_output=True, text=True)
+    st.info(f"DEBUG: eseguo openssl x509 su {cert_pem.name}")
+    res3 = subprocess.run([
+        "openssl", "x509", "-in", str(cert_pem),
+        "-noout", "-subject", "-dates"
+    ], capture_output=True, text=True)
     if res3.returncode != 0:
-        st.error(f"Errore lettura info certificato da «{cert_pem_path.name}»: {res3.stderr.strip()}")
-        cert_pem_path.unlink(missing_ok=True)
+        st.error(f"Errore lettura certinfo «{cert_pem.name}»: {res3.stderr.strip()}")
+        cert_pem.unlink(missing_ok=True)
         return output_file, "Sconosciuto", False
-
-    cert_pem_path.unlink(missing_ok=True)
+    cert_pem.unlink(missing_ok=True)
 
     lines = res3.stdout.splitlines()
-    subject_text = "\n".join(lines)
-    signer_name = "Sconosciuto"
-    for rdn in ["CN", "SN", "UID", "emailAddress", "SERIALNUMBER"]:
-        m = re.search(rf"{rdn}\s*=\s*([^,\/]+)", subject_text)
+    st.debug_msgs = []
+    st.debug_msgs.append(f"DEBUG: openssl x509 output: {lines}")
+
+    # Estrazione nome firmatario
+    signer = "Sconosciuto"
+    for rdn in ["CN","SN","UID","emailAddress","SERIALNUMBER"]:
+        m = re.search(rf"{rdn}\s*=\s*([^,\/]+)", "\n".join(lines))
         if m:
-            signer_name = m.group(1).strip()
+            signer = m.group(1).strip()
+            st.debug_msgs.append(f"DEBUG: trovato signer {signer} con RDN {rdn}")
             break
 
-    def parse_openssl_date(date_str: str) -> datetime:
-        return datetime.strptime(date_str.strip(), "%b %d %H:%M:%S %Y %Z")
+    # Estrazione date
+    def _pd(ds): return datetime.strptime(ds.strip(), "%b %d %H:%M:%S %Y %Z")
+    nb = next(l for l in lines if "notBefore" in l).split("=",1)[1]
+    na = next(l for l in lines if "notAfter" in l).split("=",1)[1]
+    valid = _pd(nb) <= datetime.utcnow() <= _pd(na)
+    st.debug_msgs.append(f"DEBUG: notBefore={nb}, notAfter={na}, valid={valid}")
 
-    not_before_line = next(l for l in lines if "notBefore" in l)
-    not_after_line  = next(l for l in lines if "notAfter" in l)
-    not_before = parse_openssl_date(not_before_line.split("=", 1)[1])
-    not_after  = parse_openssl_date(not_after_line.split("=", 1)[1])
-    now = datetime.utcnow()
-    is_valid = (not_before <= now <= not_after)
-
-    # 4) Se è veramente uno ZIP, rinomino
+    # Debug header file
     try:
         with open(output_file, "rb") as f:
             hdr = f.read(4)
-        if hdr.startswith(b"PK\x03\x04"):
-            new_zip = output_file.with_suffix(".zip")
-            output_file.rename(new_zip)
-            output_file = new_zip
-    except:
-        pass
+        is_zip = hdr.startswith(b"PK\x03\x04")
+        st.debug_msgs.append(f"DEBUG: header {payload_basename} = {hdr}")
+        if is_zip:
+            newz = output_file.with_suffix('.zip')
+            output_file.rename(newz)
+            output_file = newz
+            st.debug_msgs.append(f"DEBUG: rinominato in {newz.name}")
+    except Exception as e:
+        st.debug_msgs.append(f"DEBUG: lettura header fallita: {e}")
 
-    return output_file, signer_name, is_valid
+    # Mostra debug interni extract
+    for msg in st.debug_msgs:
+        st.info(msg)
 
-# --- Funzione ricorsiva che scompatta tutti gli ZIP e appiattisce cartelle ---
-def recursive_unpack_and_flatten(directory: Path):
-    for archive_path in list(directory.rglob("*.zip")):
-        if not archive_path.is_file():
-            continue
-        extract_folder = archive_path.parent / f"{archive_path.stem}_unzipped"
-        if extract_folder.exists():
-            if extract_folder.is_file():
-                extract_folder.unlink()
-        else:
-            extract_folder.mkdir()
+    return output_file, signer, valid
 
+# --- Funzione ricorsiva di unzip e flatten ---
+def recursive_unpack_and_flatten(dir: Path):
+    for z in list(dir.rglob("*.zip")):
+        st.info(f"DEBUG: trovo ZIP {z.relative_to(dir)}")
+        dest = z.parent / f"{z.stem}_unz"
+        shutil.rmtree(dest, ignore_errors=True)
+        dest.mkdir()
         try:
-            with zipfile.ZipFile(archive_path, "r") as zf:
-                for member in zf.infolist():
-                    try:
-                        zf.extract(member, extract_folder)
-                    except (EOFError, zipfile.BadZipFile):
-                        st.warning(f"Salto file corrotto «{member.filename}» in «{archive_path.name}»")
+            with zipfile.ZipFile(z) as zf:
+                zf.extractall(dest)
+            st.info(f"DEBUG: estratto {z.name} in {dest.relative_to(dir)}")
         except Exception as e:
-            st.warning(f"Errore estraendo «{archive_path.name}»: {e}")
-            archive_path.unlink(missing_ok=True)
-            continue
+            st.warning(f"Errore unzip {z.name}: {e}")
+        z.unlink()
+        # flatten
+        items = list(dest.iterdir())
+        if len(items)==1 and items[0].is_dir():
+            for i in items[0].iterdir(): shutil.move(str(i), str(dest))
+            items[0].rmdir()
+        recursive_unpack_and_flatten(dest)
 
-        archive_path.unlink(missing_ok=True)
-        items = list(extract_folder.iterdir())
-        if len(items) == 1 and items[0].is_dir():
-            lone = items[0]
-            for it in lone.iterdir():
-                shutil.move(str(it), str(extract_folder))
-            lone.rmdir()
-
-        recursive_unpack_and_flatten(extract_folder)
-
-# --- Cleanup di cartelle con soli .p7m non processati --------------------
-def compare_directories_safe(dir1: Path, dir2: Path) -> bool:
-    if dir2.parent != dir1:
-        return False
-    f1 = sorted(f.name for f in dir1.iterdir() if f.is_file())
-    f2 = sorted(f.name for f in dir2.iterdir() if f.is_file())
-    return f1 == f2
-
-
-def remove_duplicate_folders_safe(root_dir: Path):
-    for dp, dn, _ in os.walk(root_dir):
-        dp_path = Path(dp)
-        for d in dn:
-            p = dp_path / d
-            if p.is_dir() and compare_directories_safe(dp_path, p):
+# --- Cleanup safe ---
+def remove_dup(dir: Path):
+    st.info(f"DEBUG: cleanup duplicate in {dir}")
+    for root, ds, _ in os.walk(dir):
+        for d in ds:
+            p = Path(root)/d
+            f1 = sorted(f.name for f in Path(root).iterdir() if f.is_file())
+            f2 = sorted(f.name for f in p.iterdir() if f.is_file())
+            if f1 == f2:
                 shutil.rmtree(p)
+                st.info(f"DEBUG: rimosso dup folder {p.relative_to(dir)}")
 
-# --- Cleanup di cartelle “*.zip” ridondanti -------------------------------
-def cleanup_extra_zip_named_dirs(root_dir: Path):
-    for dp, dn, _ in os.walk(root_dir):
-        dp_path = Path(dp)
-        for d in dn:
-            dir_path = dp_path / d
-            if dir_path.is_dir() and dir_path.name.lower().endswith("zip"):
-                sib = dp_path / dir_path.name[:-3]
-                if sib.is_dir():
-                    shutil.rmtree(dir_path, ignore_errors=True)
+def cleanup_zipdirs(dir: Path):
+    st.info(f"DEBUG: cleanup extra zip-named in {dir}")
+    for root, ds, _ in os.walk(dir):
+        for d in ds:
+            p = Path(root)/d
+            if d.lower().endswith('zip') and (p.parent/(d[:-3])).is_dir():
+                shutil.rmtree(p, ignore_errors=True)
+                st.info(f"DEBUG: rimosso zip-dir {p.relative_to(dir)}")
+
+# --- Funzione principale per processare .p7m in una directory -------------
+def process_p7m_dir(d: Path, log: str):
+    for p7m in d.rglob('*.p7m'):
+        st.info(f"DEBUG: process {p7m.relative_to(d)}")
+        out, signer, valid = extract_signed_content(p7m, p7m.parent)
+        if not out:
+            st.warning(f"DEBUG: estrazione fallita per {p7m.name}")
+            continue
+        p7m.unlink(missing_ok=True)
+        st.write(f"{log} · estratto {out.name} firmato da {signer} – valid={valid}")
+        if out.suffix == '.zip':
+            recursive_unpack_and_flatten(out.parent)
+            newd = out.parent / out.stem
+            if newd.is_dir():
+                process_p7m_dir(newd, log + '  ')
+            out.unlink(missing_ok=True)
 
 # --- Streamlit: upload multiplo, creazione cartelle temporanee -------------
 output_name = st.text_input(
-    "Nome del file ZIP di output (includi “.zip” o sarà aggiunto automaticamente):",
+    "Nome del file ZIP di output (include .zip, verrà aggiunto se manca):",
     value="all_extracted.zip"
 )
 output_filename = output_name if output_name.lower().endswith(".zip") else output_name + ".zip"
@@ -179,108 +171,74 @@ uploaded_files = st.file_uploader(
 
 if uploaded_files:
     root_temp = Path(tempfile.mkdtemp(prefix="combined_"))
+    st.write(f"DEBUG: root_temp creato in {root_temp}")
 
     for uploaded in uploaded_files:
         name = uploaded.name
         ext = Path(name).suffix.lower()
+        tmp = Path(tempfile.mkdtemp(prefix="proc_"))
+        file_path = tmp / name
+        file_path.write_bytes(uploaded.getbuffer())
+        st.write(f"DEBUG: caricamento file {file_path}")
 
         if ext == ".zip":
-            st.write(f"🔄 Rilevato file ZIP: {name}")
-            tmp = Path(tempfile.mkdtemp(prefix="zip_unpack_"))
-            zp = tmp / name
-            with open(zp, "wb") as f:
-                f.write(uploaded.getbuffer())
-
+            st.write(f"🔄 Rilevato ZIP: {name}")
             try:
-                with zipfile.ZipFile(zp, "r") as zf:
-                    inner_zips = [n for n in zf.namelist() if n.lower().endswith(".zip")]
-                    if len(inner_zips) == 1:
-                        inner = inner_zips[0]
-                        data = zf.read(inner)
-                        target_inner = tmp / Path(inner).name
-                        target_inner.write_bytes(data)
-                        with zipfile.ZipFile(target_inner, "r") as inner_zf:
-                            inner_zf.extractall(tmp)
-                        zp = target_inner
-                    else:
-                        zf.extractall(tmp)
-            except (zipfile.BadZipFile, EOFError) as e:
-                st.error(f"Errore estrazione ZIP «{name}»: {e}")
+                with zipfile.ZipFile(file_path) as zf:
+                    zf.extractall(tmp)
+                st.info(f"DEBUG: unzip completato di {name}")
+            except Exception as e:
+                st.error(f"Errore unzip {name}: {e}")
                 shutil.rmtree(tmp, ignore_errors=True)
                 continue
-
-            items = [p for p in tmp.iterdir() if p != zp]
-            base = items[0] if len(items) == 1 and items[0].is_dir() else tmp
-            recursive_unpack_and_flatten(base)
-            target = root_temp / zp.stem
-            shutil.copytree(base, target)
-            process_directory_for_p7m(target, zp.stem)
-            cleanup_unprocessed_p7m_dirs(target)
-            cleanup_extra_zip_named_dirs(target)
+            recursive_unpack_and_flatten(tmp)
+            target = root_temp / Path(name).stem
+            shutil.copytree(tmp, target)
+            st.info(f"DEBUG: copiato in target {target}")
+            process_p7m_dir(target, target.name)
             shutil.rmtree(tmp, ignore_errors=True)
 
         elif ext == ".p7m":
-            st.write(f"🔄 Rilevato file .p7m: {name}")
-            tmp = Path(tempfile.mkdtemp(prefix="single_p7m_"))
-            p7m_path = tmp / name
-            with open(p7m_path, "wb") as f:
-                f.write(uploaded.getbuffer())
-
-            payload, signer, valid = extract_signed_content(p7m_path, root_temp)
-            if payload:
-                p7m_path.unlink(missing_ok=True)
-                if payload.suffix.lower() == ".zip":
-                    recursive_unpack_and_flatten(root_temp)
-                    for d in root_temp.iterdir():
-                        if d.is_dir():
-                            process_directory_for_p7m(d, d.name)
-                    cleanup_unprocessed_p7m_dirs(root_temp)
-                    cleanup_extra_zip_named_dirs(root_temp)
-                    payload.unlink(missing_ok=True)
-                c1, c2 = st.columns([4, 1])
-                with c1:
-                    st.write(f"  – File estratto: **{payload.name}**")
-                    st.write(f"    Firmato da: **{signer}**")
-                with c2:
-                    if valid:
-                        st.success("Firma valida ✅")
-                    else:
-                        st.error("Firma NON valida ⚠️")
+            st.write(f"🔄 Rilevato P7M: {name}")
+            out, signer, valid = extract_signed_content(file_path, root_temp)
+            st.write(f"DEBUG: extract_signed_content={out, signer, valid}")
+            if out:
+                st.write(f"  – File estratto: **{out.name}**, firmato da **{signer}**, valid={valid}")
             shutil.rmtree(tmp, ignore_errors=True)
 
         else:
-            st.warning(f"Ignoro «{name}»: estensione non supportata ({ext}).")
+            st.warning(f"Ignoro {name}: estensione non supportata ({ext})")
 
-    # Rimuovo cartelle duplicate in modo sicuro
-    remove_duplicate_folders_safe(root_temp)
+    # Debug struttura prima cleanup
+    st.subheader("DEBUG: struttura completa di root_temp prima cleanup")
+    for p in sorted(root_temp.rglob("*")):
+        st.write(f"• {p.relative_to(root_temp)}")
 
-    # --- DEBUG: visualizzo struttura completa di root_temp ---
-    st.subheader("DEBUG: struttura completa dei file estratti")
-    for path in sorted(root_temp.rglob("*")):
-        st.write("•", path.relative_to(root_temp))
+    remove_dup(root_temp)
+    cleanup_zipdirs(root_temp)
 
-    # --- Creo ZIP di output in cartella separata ----------------
-    out_dir = Path(tempfile.mkdtemp(prefix="zip_output_"))
-    zip_out = out_dir / output_filename
-    shutil.make_archive(str(zip_out.with_suffix("")), 'zip', str(root_temp))
+    # Debug struttura dopo cleanup
+    st.subheader("DEBUG: struttura completa di root_temp dopo cleanup")
+    for p in sorted(root_temp.rglob("*")):
+        st.write(f"• {p.relative_to(root_temp)}")
 
-    # Anteprima dinamica della struttura del file ZIP risultante
-    st.subheader("Anteprima strutturale del file ZIP risultante")
-    with zipfile.ZipFile(zip_out, "r") as preview_zf:
-        paths = [info.filename for info in preview_zf.infolist()]
-    split_paths = [p.split("/") for p in paths]
-    max_levels = max(len(parts) for parts in split_paths)
-    col_names = [f"Livello {i+1}" for i in range(max_levels)]
-    rows = [parts + [""] * (max_levels - len(parts)) for parts in split_paths]
-    df = pd.DataFrame(rows, columns=col_names)
-    for col in col_names:
-        df[col] = df[col].mask(df[col] == df[col].shift(), "")
-    st.table(df)
+    # Creazione ZIP di output in cartella separata
+    out_dir = Path(tempfile.mkdtemp(prefix="zip_out_"))
+    zip_base = str(out_dir / output_filename).rstrip('.zip')
+    zip_path = Path(shutil.make_archive(zip_base, 'zip', str(root_temp)))
+    st.success(f"ZIP creato: {zip_path}")
 
-    # Bottone di download
-    with open(zip_out, "rb") as f:
+    # Anteprima struttura ZIP
+    st.subheader("Anteprima struttura ZIP risultante")
+    with zipfile.ZipFile(zip_path) as zf:
+        paths = zf.namelist()
+    for p in paths:
+        st.write(p)
+
+    # Download button
+    with open(zip_path, 'rb') as f:
         st.download_button(
-            label="Scarica il file ZIP con tutte le estrazioni",
+            "Scarica il file ZIP con tutte le estrazioni",
             data=f,
             file_name=output_filename,
             mime="application/zip"
