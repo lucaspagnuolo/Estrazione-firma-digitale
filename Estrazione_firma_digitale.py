@@ -131,8 +131,7 @@ def process_p7m_dir(directory: Path, indent: str = ""):
             except Exception:
                 st.error(f"Errore estrazione ZIP interno di {payload.name}")
                 continue
-            base = tmp
-            recursive_unpack_and_flatten(base)
+            recursive_unpack_and_flatten(tmp)
             new_dir = tmp / payload.stem
             if new_dir.is_dir():
                 process_p7m_dir(new_dir, indent + "  ")
@@ -194,11 +193,11 @@ if uploaded_files:
             st.warning(f"Ignoro {name}: estensione non supportata")
 
     # Rimozione cartelle `_unz` residue
-for dir_unz in root_temp.rglob('*_unz'):
-    if dir_unz.is_dir():
-        shutil.rmtree(dir_unz, ignore_errors=True)
+    for dir_unz in root_temp.rglob('*_unz'):
+        if dir_unz.is_dir():
+            shutil.rmtree(dir_unz, ignore_errors=True)
 
-# Creazione ZIP di output (escludendo *_unz)
+    # Creazione ZIP di output (escludendo *_unz)
     out_dir = Path(tempfile.mkdtemp(prefix="zip_out_"))
     zip_path = out_dir / output_filename
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
