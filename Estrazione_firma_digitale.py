@@ -193,7 +193,12 @@ if uploaded_files:
         else:
             st.warning(f"Ignoro {name}: estensione non supportata")
 
-    # Creazione ZIP di output (escludendo *_unz)
+    # Rimozione cartelle `_unz` residue
+for dir_unz in root_temp.rglob('*_unz'):
+    if dir_unz.is_dir():
+        shutil.rmtree(dir_unz, ignore_errors=True)
+
+# Creazione ZIP di output (escludendo *_unz)
     out_dir = Path(tempfile.mkdtemp(prefix="zip_out_"))
     zip_path = out_dir / output_filename
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
