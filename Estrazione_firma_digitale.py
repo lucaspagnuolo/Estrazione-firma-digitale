@@ -103,7 +103,7 @@ def recursive_unpack_and_flatten(directory: Path):
             lone.rmdir()
         recursive_unpack_and_flatten(extract_folder)
 
-# --- Processamento dei .p7m con indentazione ------------------------------
+# --- Elaborazione ricorsiva dei .p7m ---------------------------------------
 def process_p7m_dir(directory: Path, indent: str = ""):
     for p7m in directory.rglob("*.p7m"):
         payload, signer, valid = extract_signed_content(p7m, p7m.parent)
@@ -112,11 +112,33 @@ def process_p7m_dir(directory: Path, indent: str = ""):
         p7m.unlink(missing_ok=True)
         st.write(f"{indent}– Estratto: **{payload.name}** | Firmato da: **{signer}** | Validità: {'✅' if valid else '⚠️'}")
         if payload.suffix.lower() == ".zip":
-            recursive_unpack_and_flatten(payload.parent)
-            new_dir = payload.parent / payload.stem
+            # Estrazione iniziale con gestione singolo inner zip
+            tmp = payload.parent
+            try:
+                with zipfile.ZipFile(payload) as zf:
+                    inner_zips = [n for n in zf.namelist() if n.lower().endswith('.zip')]
+                    if len(inner_zips) == 1:
+                        data = zf.read(inner_zips[0])
+                        target_inner = tmp / Path(inner_zips[0]).name
+                        target_inner.write_bytes(data)
+                        with zipfile.ZipFile(target_inner) as izf:
+                            izf.extractall(tmp)
+                        payload.unlink(missing_ok=True)
+                        archive = target_inner
+                    else:
+                        zf.extractall(tmp)
+                        payload.unlink(missing_ok=True)
+                        archive = None
+            except Exception:
+                st.error(f"Errore estrazione ZIP interno di {payload.name}")
+                continue
+            # Scompattamento ricorsivo
+            base = tmp
+            recursive_unpack_and_flatten(base)
+            # Nuova directory
+            new_dir = tmp / payload.stem
             if new_dir.is_dir():
                 process_p7m_dir(new_dir, indent + "  ")
-            payload.unlink(missing_ok=True)
 
 # --- Streamlit UI e flusso principale ------------------------------------
 output_name = st.text_input("Nome del file ZIP di output (includi .zip):", value="all_extracted.zip")
@@ -138,32 +160,41 @@ if uploaded_files:
         file_path.write_bytes(uploaded.getbuffer())
 
         if ext == ".zip":
+            st.write(f"🔄 Rilevato ZIP: {name}")
+            # Gestione iniziale nested zip
             try:
                 with zipfile.ZipFile(file_path) as zf:
-                    zf.extractall(tmp_dir)
+                    inner_zips = [n for n in zf.namelist() if n.lower().endswith('.zip')]
+                    if len(inner_zips) == 1:
+                        data = zf.read(inner_zips[0])
+                        target_inner = tmp_dir / Path(inner_zips[0]).name
+                        target_inner.write_bytes(data)
+                        with zipfile.ZipFile(target_inner) as izf:
+                            izf.extractall(tmp_dir)
+                        base_dir = tmp_dir
+                    else:
+                        zf.extractall(tmp_dir)
+                        base_dir = tmp_dir
             except Exception as e:
                 st.error(f"Errore estrazione ZIP: {e}")
                 shutil.rmtree(tmp_dir, ignore_errors=True)
                 continue
-            recursive_unpack_and_flatten(tmp_dir)
-            base_candidate = tmp_dir / file_path.stem
-            base_dir = base_candidate if base_candidate.is_dir() else tmp_dir
+
+            recursive_unpack_and_flatten(base_dir)
+            # Copia in root_temp
             target = root_temp / file_path.stem
             shutil.rmtree(target, ignore_errors=True)
-            target.mkdir()
-            for item in base_dir.iterdir():
-                dest = target / item.name
-                if item.is_dir(): shutil.copytree(item, dest)
-                else: shutil.copy2(item, dest)
+            shutil.copytree(base_dir, target)
             process_p7m_dir(target)
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
         elif ext == ".p7m":
-            tmp = tmp_dir
+            st.write(f"🔄 Rilevato .p7m: {name}")
             payload, signer, valid = extract_signed_content(file_path, root_temp)
             if payload:
                 st.write(f"– Estratto: **{payload.name}** | Firmato da: **{signer}** | Validità: {'✅' if valid else '⚠️'}")
-            shutil.rmtree(tmp, ignore_errors=True)
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
         else:
             st.warning(f"Ignoro {name}: estensione non supportata")
 
