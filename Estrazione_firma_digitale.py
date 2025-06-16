@@ -241,14 +241,7 @@ if uploaded_files:
         for info in zf.infolist():
             st.write(info.filename)
 
-    # Download button
-    with open(zip_path, 'rb') as f:
-        st.download_button(
-            "Scarica il file ZIP con tutte le estrazioni",
-            data=f,
-            file_name=output_filename,
-            mime="application/zip"
-        )
+        # Download button
     with open(zip_path, 'rb') as f:
         st.download_button(
             "Scarica il file ZIP con tutte le estrazioni",
