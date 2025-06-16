@@ -18,12 +18,12 @@ with col2:
     logo = Image.open("img/Consip_Logo.png")
     st.image(logo, width=300)
 
-# --- Funzione che esegue “openssl cms -verify” e legge il certificato -----
+# --- Funzione per estrarre contenuto firmato e certificato ----------------
 def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path | None, str, bool]:
     payload_basename = p7m_file_path.stem
     output_file = output_dir / payload_basename
 
-    # Estraggo il payload
+    # 1) Estraggo payload
     res1 = subprocess.run([
         "openssl", "cms", "-verify",
         "-in", str(p7m_file_path), "-inform", "DER",
@@ -33,7 +33,7 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
         st.error(f"Errore estrazione «{p7m_file_path.name}»: {res1.stderr.decode().strip()}")
         return None, "", False
 
-    # Estraggo il certificato in PEM
+    # 2) Estraggo certificato
     cert_pem = output_dir / f"{payload_basename}_cert.pem"
     res2 = subprocess.run([
         "openssl", "pkcs7", "-inform", "DER",
@@ -44,7 +44,7 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
         st.error(f"Errore estrazione certificato da «{p7m_file_path.name}»: {res2.stderr.decode().strip()}")
         return output_file, "Sconosciuto", False
 
-    # Leggo subject e dates
+    # 3) Leggo subject e dates
     res3 = subprocess.run([
         "openssl", "x509", "-in", str(cert_pem),
         "-noout", "-subject", "-dates"
@@ -55,9 +55,10 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
         return output_file, "Sconosciuto", False
 
     lines = res3.stdout.splitlines()
+    subject_text = "\n".join(lines)
     signer = "Sconosciuto"
     for rdn in ["CN","SN","UID","emailAddress","SERIALNUMBER"]:
-        m = re.search(rf"{rdn}\s*=\s*([^,\/]+)", "\n".join(lines))
+        m = re.search(rf"{rdn}\s*=\s*([^,\/]+)", subject_text)
         if m:
             signer = m.group(1).strip()
             break
@@ -67,7 +68,7 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
     not_after  = next(l for l in lines if "notAfter" in l).split("=",1)[1]
     valid = _pd(not_before) <= datetime.utcnow() <= _pd(not_after)
 
-    # Rinomino se payload ZIP
+    # 4) Rinomino se ZIP
     try:
         with open(output_file, "rb") as f:
             if f.read(4).startswith(b"PK\x03\x04"):
@@ -79,7 +80,7 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
 
     return output_file, signer, valid
 
-# --- Funzione ricorsiva che scompatta tutti gli ZIP e appiattisce cartelle ---
+# --- Funzione ricorsiva per ZIP annidati ----------------------------------
 def recursive_unpack_and_flatten(directory: Path):
     for archive in list(directory.rglob("*.zip")):
         if not archive.is_file():
@@ -102,10 +103,9 @@ def recursive_unpack_and_flatten(directory: Path):
             lone.rmdir()
         recursive_unpack_and_flatten(extract_folder)
 
-# --- Processamento principale dei .p7m in una directory ---
+# --- Processamento dei .p7m con indentazione ------------------------------
 def process_p7m_dir(directory: Path, indent: str = ""):
     for p7m in directory.rglob("*.p7m"):
-        rel = p7m.relative_to(directory)
         payload, signer, valid = extract_signed_content(p7m, p7m.parent)
         if not payload:
             continue
@@ -118,7 +118,7 @@ def process_p7m_dir(directory: Path, indent: str = ""):
                 process_p7m_dir(new_dir, indent + "  ")
             payload.unlink(missing_ok=True)
 
-# --- Streamlit UI e flusso principale ---
+# --- Streamlit UI e flusso principale ------------------------------------
 output_name = st.text_input("Nome del file ZIP di output (includi .zip):", value="all_extracted.zip")
 output_filename = output_name if output_name.lower().endswith(".zip") else output_name + ".zip"
 
@@ -128,7 +128,6 @@ uploaded_files = st.file_uploader(
 )
 
 if uploaded_files:
-    # Cartella temporanea radice
     root_temp = Path(tempfile.mkdtemp(prefix="combined_"))
 
     for uploaded in uploaded_files:
@@ -147,21 +146,16 @@ if uploaded_files:
                 shutil.rmtree(tmp_dir, ignore_errors=True)
                 continue
             recursive_unpack_and_flatten(tmp_dir)
-            # Individua la directory base (evita doppio nesting)
-            possible = tmp_dir / file_path.stem
-            base_dir = possible if possible.is_dir() else tmp_dir
+            base_candidate = tmp_dir / file_path.stem
+            base_dir = base_candidate if base_candidate.is_dir() else tmp_dir
             target = root_temp / file_path.stem
             shutil.rmtree(target, ignore_errors=True)
-            # Copia solo il contenuto della base_dir
             target.mkdir()
             for item in base_dir.iterdir():
                 dest = target / item.name
-                if item.is_dir():
-                    shutil.copytree(item, dest)
-                else:
-                    shutil.copy2(item, dest)
+                if item.is_dir(): shutil.copytree(item, dest)
+                else: shutil.copy2(item, dest)
             process_p7m_dir(target)
-            shutil.rmtree(tmp_dir, ignore_errors=True)
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
         elif ext == ".p7m":
@@ -172,7 +166,7 @@ if uploaded_files:
         else:
             st.warning(f"Ignoro {name}: estensione non supportata")
 
-        # Creazione ZIP di output senza livello ridondante (escludendo *_unz)
+    # Creazione ZIP di output (escludendo *_unz)
     out_dir = Path(tempfile.mkdtemp(prefix="zip_out_"))
     zip_path = out_dir / output_filename
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
@@ -181,7 +175,7 @@ if uploaded_files:
                 for file in path.rglob('*'):
                     if file.is_file() and not any(p.endswith('_unz') for p in file.parts):
                         zf.write(file, file.relative_to(root_temp))
-            elif path.is_file():
+            else:
                 zf.write(path, path.name)
 
     # Anteprima struttura ZIP
@@ -189,12 +183,8 @@ if uploaded_files:
     with zipfile.ZipFile(zip_path) as zf:
         for info in zf.infolist():
             st.write(info.filename)
-    st.subheader("Anteprima struttura ZIP risultante")
-    with zipfile.ZipFile(zip_path) as zf:
-        for info in zf.infolist():
-            st.write(info.filename)
 
-    # Pulsante di download
+    # Download
     with open(zip_path, 'rb') as f:
         st.download_button(
             "Scarica file ZIP con estrazioni",
