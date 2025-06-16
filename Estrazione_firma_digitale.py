@@ -172,19 +172,23 @@ if uploaded_files:
         else:
             st.warning(f"Ignoro {name}: estensione non supportata")
 
-    # Creazione ZIP di output senza livello ridondante
+        # Creazione ZIP di output senza livello ridondante (escludendo *_unz)
     out_dir = Path(tempfile.mkdtemp(prefix="zip_out_"))
     zip_path = out_dir / output_filename
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
         for path in root_temp.iterdir():
             if path.is_dir():
                 for file in path.rglob('*'):
-                    if file.is_file():
+                    if file.is_file() and not any(p.endswith('_unz') for p in file.parts):
                         zf.write(file, file.relative_to(root_temp))
             elif path.is_file():
                 zf.write(path, path.name)
 
     # Anteprima struttura ZIP
+    st.subheader("Anteprima struttura ZIP risultante")
+    with zipfile.ZipFile(zip_path) as zf:
+        for info in zf.infolist():
+            st.write(info.filename)
     st.subheader("Anteprima struttura ZIP risultante")
     with zipfile.ZipFile(zip_path) as zf:
         for info in zf.infolist():
