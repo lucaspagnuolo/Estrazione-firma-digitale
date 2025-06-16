@@ -222,20 +222,33 @@ if uploaded_files:
     for p in sorted(root_temp.rglob("*")):
         st.write(f"• {p.relative_to(root_temp)}")
 
-    # Creazione ZIP di output in cartella separata
+        # Creazione ZIP di output in cartella separata
     out_dir = Path(tempfile.mkdtemp(prefix="zip_out_"))
-    zip_base = str(out_dir / output_filename).rstrip('.zip')
-    zip_path = Path(shutil.make_archive(zip_base, 'zip', str(root_temp)))
+    zip_path = out_dir / output_filename
+    st.info(f"DEBUG: creo zip manualmente in {zip_path}")
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for file in root_temp.rglob('*'):
+            if file.is_file():
+                arc = file.relative_to(root_temp)
+                zf.write(file, arc)
+                st.debug_msgs and st.info(f"DEBUG: aggiunto {arc} allo zip")
+
     st.success(f"ZIP creato: {zip_path}")
 
     # Anteprima struttura ZIP
     st.subheader("Anteprima struttura ZIP risultante")
     with zipfile.ZipFile(zip_path) as zf:
-        paths = zf.namelist()
-    for p in paths:
-        st.write(p)
+        for info in zf.infolist():
+            st.write(info.filename)
 
     # Download button
+    with open(zip_path, 'rb') as f:
+        st.download_button(
+            "Scarica il file ZIP con tutte le estrazioni",
+            data=f,
+            file_name=output_filename,
+            mime="application/zip"
+        )
     with open(zip_path, 'rb') as f:
         st.download_button(
             "Scarica il file ZIP con tutte le estrazioni",
