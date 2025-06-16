@@ -75,7 +75,7 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
     subject_text = "\n".join(lines)
     signer_name = "Sconosciuto"
     for rdn in ["CN", "SN", "UID", "emailAddress", "SERIALNUMBER"]:
-        m = re.search(rf"{rdn}\s*=\s*([^,/]+)", subject_text)
+        m = re.search(rf"{rdn}\s*=\s*([^,\/]+)", subject_text)
         if m:
             signer_name = m.group(1).strip()
             break
@@ -83,11 +83,8 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
     def parse_openssl_date(date_str: str) -> datetime:
         return datetime.strptime(date_str.strip(), "%b %d %H:%M:%S %Y %Z")
 
-    # Trovo le linee con notBefore / notAfter
     not_before_line = next(l for l in lines if "notBefore" in l)
     not_after_line  = next(l for l in lines if "notAfter" in l)
-
-    # Split corretto: prendo solo la data dopo '='
     not_before = parse_openssl_date(not_before_line.split("=", 1)[1])
     not_after  = parse_openssl_date(not_after_line.split("=", 1)[1])
     now = datetime.utcnow()
@@ -140,17 +137,29 @@ def recursive_unpack_and_flatten(directory: Path):
 
         recursive_unpack_and_flatten(extract_folder)
 
-# --- Funzione per confrontare due cartelle e rimuovere duplicati ------------
-def compare_directories(dir1: Path, dir2: Path) -> bool:
+# --- Funzioni di pulizia sicura per evitare cancellazioni errate ------------
+def compare_directories_safe(dir1: Path, dir2: Path) -> bool:
+    """
+    Confronta due directory solo se dir2 è sottodirectory diretta di dir1.
+    Confronta solo i nomi dei file contenuti, non le sottocartelle.
+    """
+    if dir2.parent != dir1:
+        return False
     f1 = sorted(f.name for f in dir1.iterdir() if f.is_file())
     f2 = sorted(f.name for f in dir2.iterdir() if f.is_file())
     return f1 == f2
 
-def remove_duplicate_folders(root_dir: Path):
+
+def remove_duplicate_folders_safe(root_dir: Path):
+    """
+    Rimuove solo le sottocartelle che hanno contenuto identico alla loro cartella genitore.
+    Non confronta cartelle arbitrariamente, solo sottocartelle dirette.
+    """
     for dp, dn, _ in os.walk(root_dir):
+        dp_path = Path(dp)
         for d in dn:
-            p = Path(dp) / d
-            if compare_directories(Path(dp), p):
+            p = dp_path / d
+            if p.is_dir() and compare_directories_safe(dp_path, p):
                 shutil.rmtree(p)
 
 # --- Funzione principale per processare .p7m in una directory -------------
@@ -221,7 +230,6 @@ uploaded_files = st.file_uploader(
 )
 
 if uploaded_files:
-    # Cartella temporanea principale
     root_temp = Path(tempfile.mkdtemp(prefix="combined_"))
 
     for uploaded in uploaded_files:
@@ -237,34 +245,25 @@ if uploaded_files:
 
             try:
                 with zipfile.ZipFile(zp, "r") as zf:
-                    # Trova tutti i .zip interni
                     inner_zips = [n for n in zf.namelist() if n.lower().endswith(".zip")]
-            
                     if len(inner_zips) == 1:
                         inner = inner_zips[0]
-                        # Leggi i byte dello zip interno
                         data = zf.read(inner)
                         target_inner = tmp / Path(inner).name
                         target_inner.write_bytes(data)
-            
-                        # Ora apro e scompatto quello
                         with zipfile.ZipFile(target_inner, "r") as inner_zf:
                             inner_zf.extractall(tmp)
                         zp = target_inner
-            
                     else:
                         zf.extractall(tmp)
-            
             except (zipfile.BadZipFile, EOFError) as e:
                 st.error(f"Errore estrazione ZIP «{name}»: {e}")
                 shutil.rmtree(tmp, ignore_errors=True)
                 continue
 
-
             items = [p for p in tmp.iterdir() if p != zp]
             base = items[0] if len(items) == 1 and items[0].is_dir() else tmp
             recursive_unpack_and_flatten(base)
-
             target = root_temp / zp.stem
             shutil.copytree(base, target)
             process_directory_for_p7m(target, zp.stem)
@@ -290,7 +289,6 @@ if uploaded_files:
                     cleanup_unprocessed_p7m_dirs(root_temp)
                     cleanup_extra_zip_named_dirs(root_temp)
                     payload.unlink(missing_ok=True)
-
                 c1, c2 = st.columns([4, 1])
                 with c1:
                     st.write(f"  – File estratto: **{payload.name}**")
@@ -300,14 +298,13 @@ if uploaded_files:
                         st.success("Firma valida ✅")
                     else:
                         st.error("Firma NON valida ⚠️")
-
             shutil.rmtree(tmp, ignore_errors=True)
 
         else:
             st.warning(f"Ignoro «{name}»: estensione non supportata ({ext}).")
 
-    # Rimuovo cartelle duplicate
-    remove_duplicate_folders(root_temp)
+    # Rimuovo cartelle duplicate in modo sicuro
+    remove_duplicate_folders_safe(root_temp)
 
     # Creo ZIP di output
     zip_out = root_temp / output_filename
@@ -319,36 +316,20 @@ if uploaded_files:
                 fp = Path(root) / f
                 rp = fp.relative_to(root_temp)
                 zf.write(fp, rp)
-    # Anteprima dinamica della struttura del file ZIP (multi-livello)
+
+    # Anteprima dinamica della struttura del file ZIP risultante
     st.subheader("Anteprima strutturale del file ZIP risultante")
-    # 1) Raccolgo tutti i path completi
     with zipfile.ZipFile(zip_out, "r") as preview_zf:
         paths = [info.filename for info in preview_zf.infolist()]
-
-    # 2) Splitting su "/" in liste di parti
     split_paths = [p.split("/") for p in paths]
-
-    # 3) Trovo il numero massimo di livelli
     max_levels = max(len(parts) for parts in split_paths)
-
-    # 4) Definisco i nomi delle colonne dinamicamente
     col_names = [f"Livello {i+1}" for i in range(max_levels)]
-
-    # 5) Ricostruisco un array rettangolare, padding con stringhe vuote
-    rows = [
-        parts + [""] * (max_levels - len(parts))
-        for parts in split_paths
-    ]
-
-    # 6) Costruisco il DataFrame
+    rows = [parts + [""] * (max_levels - len(parts)) for parts in split_paths]
     df = pd.DataFrame(rows, columns=col_names)
-
-    # 7) Nascondo i valori ripetuti in ciascuna colonna
     for col in col_names:
         df[col] = df[col].mask(df[col] == df[col].shift(), "")
-
-    # 8) Mostro la tabella
     st.table(df)
+
     # Bottone di download
     with open(zip_out, "rb") as f:
         st.download_button(
