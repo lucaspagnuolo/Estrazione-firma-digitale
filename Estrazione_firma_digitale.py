@@ -17,7 +17,8 @@ TRUST_PEM   = Path("trust_store.pem")
 
 def build_trust_store(tsl_path: Path, out_pem: Path):
     """
-    Estrae tutti i certificati da TSL‑IT.xml e li concatena in un unico PEM
+    Estrae TUTTI i certificati <ds:X509Certificate> dal TSL e li concatena in un unico PEM.
+    Se non ne trova, solleva un’eccezione.
     """
     ns = {
         'tsl': 'http://uri.etsi.org/02231/v2#',
@@ -25,21 +26,28 @@ def build_trust_store(tsl_path: Path, out_pem: Path):
     }
     tree = ET.parse(tsl_path)
     root = tree.getroot()
+    certs = root.findall('.//ds:X509Certificate', ns)
+    if not certs:
+        raise RuntimeError(f"Nessun certificato trovato in {tsl_path}")
     with open(out_pem, 'wb') as f:
-        # Scorri tutti i ServiceDigitalIdentity e prendi il tag X509Certificate
-        for sd in root.findall('.//tsl:ServiceDigitalIdentity', ns):
-            for cert in sd.findall('.//ds:X509Certificate', ns):
-                cert_b64 = cert.text.strip()
-                pem = (
-                    b"-----BEGIN CERTIFICATE-----\n"
-                    + cert_b64.encode('ascii')
-                    + b"\n-----END CERTIFICATE-----\n\n"
-                )
-                f.write(pem)
+        for cert in certs:
+            b64 = cert.text.strip() if cert.text else ""
+            if len(b64) < 200:  # filtro banale per saltare eventuali nodi vuoti/errati
+                continue
+            pem = (
+                b"-----BEGIN CERTIFICATE-----\n"
+                + b64.encode('ascii')
+                + b"\n-----END CERTIFICATE-----\n\n"
+            )
+            f.write(pem)
+    print(f"[build_trust_store] Estratti {len(certs)} certificati in {out_pem}")
 
 # --- Build del trust store all’avvio -------------------------------------
-if not TRUST_PEM.exists():
+try:
     build_trust_store(TSL_FILE, TRUST_PEM)
+except Exception as e:
+    st.error(f"Impossibile costruire il trust store: {e}")
+    st.stop()
 
 # --- Layout con logo a destra ---------------------------------------------
 col1, col2 = st.columns([7, 3])
