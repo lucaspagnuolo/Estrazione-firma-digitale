@@ -10,6 +10,7 @@ import re
 import pandas as pd
 from PIL import Image
 import xml.etree.ElementTree as ET
+import requests  # <— aggiunto
 
 # --- Costanti per TSL -----------------------------------------------------
 TSL_FILE  = Path("img/TSL-IT.xml")
@@ -68,6 +69,29 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path|
         "-print_certs",
         "-out", str(chain_pem)
     ], capture_output=True)
+
+    # 1.1) Estrai AIA e scarica l’intermedio se mancante
+    aia_proc = subprocess.run([
+        "openssl", "x509", "-in", str(chain_pem),
+        "-noout", "-text"
+    ], capture_output=True, text=True)
+    aia_url = None
+    for line in aia_proc.stdout.splitlines():
+        if "CA Issuers - URI:" in line:
+            aia_url = line.split("URI:")[1].strip()
+            break
+    if aia_url:
+        try:
+            resp = requests.get(aia_url, timeout=5)
+            if resp.status_code == 200 and b"-----BEGIN CERTIFICATE-----" in resp.content:
+                with open(chain_pem, "ab") as f:
+                    f.write(b"\n" + resp.content + b"\n")
+            else:
+                st.warning(f"Impossibile scaricare intermedio da {aia_url}")
+        except Exception as e:
+            st.warning(f"Errore download intermedio da {aia_url}: {e}")
+    else:
+        st.warning("Nessun AIA (CA Issuers) trovato: intermedi mancante")
 
     # 2) Verifico e estraggo il payload usando trust_store + intermedi (-certfile)
     res = subprocess.run([
@@ -170,7 +194,7 @@ def process_p7m_dir(dir: Path, indent=""):
                     else:
                         zf.extractall(tmp)
                         payload.unlink(missing_ok=True)
-            except Exception as e:
+            except Exception:
                 st.error(f"Errore estrazione ZIP interno di {payload.name}")
                 continue
             recursive_unpack_and_flatten(tmp)
