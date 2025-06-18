@@ -12,13 +12,12 @@ from PIL import Image
 import xml.etree.ElementTree as ET
 
 # --- Costanti per TSL -----------------------------------------------------
-TSL_FILE    = Path("img/TSL-IT.txt")
-TRUST_PEM   = Path("trust_store.pem")
+TSL_FILE  = Path("img/TSL-IT.xml")
+TRUST_PEM = Path("trust_store.pem")
 
 def build_trust_store(tsl_path: Path, out_pem: Path):
     """
     Estrae TUTTI i certificati <ds:X509Certificate> dal TSL e li concatena in un unico PEM.
-    Se non ne trova, solleva un’eccezione.
     """
     ns = {
         'tsl': 'http://uri.etsi.org/02231/v2#',
@@ -32,7 +31,7 @@ def build_trust_store(tsl_path: Path, out_pem: Path):
     with open(out_pem, 'wb') as f:
         for cert in certs:
             b64 = cert.text.strip() if cert.text else ""
-            if len(b64) < 200:  # filtro banale per saltare eventuali nodi vuoti/errati
+            if len(b64) < 200:
                 continue
             pem = (
                 b"-----BEGIN CERTIFICATE-----\n"
@@ -62,18 +61,30 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
     payload_basename = p7m_file_path.stem
     output_file = output_dir / payload_basename
 
-    # 1) Estraggo payload verificando la firma contro trust_store.pem
+    # 1) Estraggo chain (firmatario + intermedi)
+    chain_pem = output_dir / f"{payload_basename}_chain.pem"
+    subprocess.run([
+        "openssl", "pkcs7",
+        "-inform", "DER",
+        "-in", str(p7m_file_path),
+        "-print_certs",
+        "-out", str(chain_pem)
+    ], capture_output=True)
+
+    # 2) Estraggo payload verificando firma + intermedi
     res1 = subprocess.run([
         "openssl", "cms", "-verify",
         "-in", str(p7m_file_path), "-inform", "DER",
         "-CAfile", str(TRUST_PEM),
+        "-untrusted", str(chain_pem),
         "-out", str(output_file)
     ], capture_output=True)
     if res1.returncode != 0:
         st.error(f"Errore estrazione «{p7m_file_path.name}»: {res1.stderr.decode().strip()}")
+        chain_pem.unlink(missing_ok=True)
         return None, "", False
 
-    # 2) Estraggo certificato
+    # 3) Estraggo certificato per leggere subject e dates
     cert_pem = output_dir / f"{payload_basename}_cert.pem"
     res2 = subprocess.run([
         "openssl", "pkcs7", "-inform", "DER",
@@ -82,14 +93,16 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
     ], capture_output=True)
     if res2.returncode != 0:
         st.error(f"Errore estrazione certificato da «{p7m_file_path.name}»: {res2.stderr.decode().strip()}")
+        chain_pem.unlink(missing_ok=True)
         return output_file, "Sconosciuto", False
 
-    # 3) Leggo subject e dates
+    # 4) Leggo subject e validity dal certificato
     res3 = subprocess.run([
         "openssl", "x509", "-in", str(cert_pem),
         "-noout", "-subject", "-dates"
     ], capture_output=True, text=True)
     cert_pem.unlink(missing_ok=True)
+    chain_pem.unlink(missing_ok=True)
     if res3.returncode != 0:
         st.error(f"Errore lettura info certificato: {res3.stderr.strip()}")
         return output_file, "Sconosciuto", False
@@ -108,7 +121,7 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
     not_after  = next(l for l in lines if "notAfter" in l).split("=",1)[1]
     valid = _pd(not_before) <= datetime.utcnow() <= _pd(not_after)
 
-    # 4) Rinomino se ZIP
+    # 5) Rinomino se ZIP
     try:
         with open(output_file, "rb") as f:
             if f.read(4).startswith(b"PK\x03\x04"):
@@ -120,7 +133,7 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
 
     return output_file, signer, valid
 
-# --- Funzione ricorsiva per ZIP annidati ----------------------------------
+# --- Funzioni di unpacking ZIP e processamento .p7m -----------------------
 def recursive_unpack_and_flatten(directory: Path):
     for archive in list(directory.rglob("*.zip")):
         if not archive.is_file(): continue
@@ -142,7 +155,6 @@ def recursive_unpack_and_flatten(directory: Path):
             lone.rmdir()
         recursive_unpack_and_flatten(extract_folder)
 
-# --- Elaborazione ricorsiva dei .p7m --------------------------------------
 def process_p7m_dir(directory: Path, indent: str = ""):
     for p7m in directory.rglob("*.p7m"):
         payload, signer, valid = extract_signed_content(p7m, p7m.parent)
