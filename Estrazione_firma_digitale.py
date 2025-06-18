@@ -9,6 +9,37 @@ from datetime import datetime
 import re
 import pandas as pd
 from PIL import Image
+import xml.etree.ElementTree as ET
+
+# --- Costanti per TSL -----------------------------------------------------
+TSL_FILE    = Path("img/TSL-IT.xml")
+TRUST_PEM   = Path("trust_store.pem")
+
+def build_trust_store(tsl_path: Path, out_pem: Path):
+    """
+    Estrae tutti i certificati da TSL‑IT.xml e li concatena in un unico PEM
+    """
+    ns = {
+        'tsl': 'http://uri.etsi.org/02231/v2#',
+        'ds':  'http://www.w3.org/2000/09/xmldsig#'
+    }
+    tree = ET.parse(tsl_path)
+    root = tree.getroot()
+    with open(out_pem, 'wb') as f:
+        # Scorri tutti i ServiceDigitalIdentity e prendi il tag X509Certificate
+        for sd in root.findall('.//tsl:ServiceDigitalIdentity', ns):
+            for cert in sd.findall('.//ds:X509Certificate', ns):
+                cert_b64 = cert.text.strip()
+                pem = (
+                    b"-----BEGIN CERTIFICATE-----\n"
+                    + cert_b64.encode('ascii')
+                    + b"\n-----END CERTIFICATE-----\n\n"
+                )
+                f.write(pem)
+
+# --- Build del trust store all’avvio -------------------------------------
+if not TRUST_PEM.exists():
+    build_trust_store(TSL_FILE, TRUST_PEM)
 
 # --- Layout con logo a destra ---------------------------------------------
 col1, col2 = st.columns([7, 3])
@@ -23,11 +54,12 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
     payload_basename = p7m_file_path.stem
     output_file = output_dir / payload_basename
 
-    # 1) Estraggo payload
+    # 1) Estraggo payload verificando la firma contro trust_store.pem
     res1 = subprocess.run([
         "openssl", "cms", "-verify",
         "-in", str(p7m_file_path), "-inform", "DER",
-        "-noverify", "-out", str(output_file)
+        "-CAfile", str(TRUST_PEM),
+        "-out", str(output_file)
     ], capture_output=True)
     if res1.returncode != 0:
         st.error(f"Errore estrazione «{p7m_file_path.name}»: {res1.stderr.decode().strip()}")
@@ -83,8 +115,7 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path 
 # --- Funzione ricorsiva per ZIP annidati ----------------------------------
 def recursive_unpack_and_flatten(directory: Path):
     for archive in list(directory.rglob("*.zip")):
-        if not archive.is_file():
-            continue
+        if not archive.is_file(): continue
         extract_folder = archive.parent / f"{archive.stem}_unz"
         shutil.rmtree(extract_folder, ignore_errors=True)
         extract_folder.mkdir()
@@ -103,7 +134,7 @@ def recursive_unpack_and_flatten(directory: Path):
             lone.rmdir()
         recursive_unpack_and_flatten(extract_folder)
 
-# --- Elaborazione ricorsiva dei .p7m ---------------------------------------
+# --- Elaborazione ricorsiva dei .p7m --------------------------------------
 def process_p7m_dir(directory: Path, indent: str = ""):
     for p7m in directory.rglob("*.p7m"):
         payload, signer, valid = extract_signed_content(p7m, p7m.parent)
@@ -179,7 +210,6 @@ if uploaded_files:
             target = root_temp / file_path.stem
             shutil.rmtree(target, ignore_errors=True)
             shutil.copytree(base_dir, target)
-            # Rimuovo livello ridondante se presente
             redundant = target / file_path.stem
             if redundant.is_dir():
                 for item in redundant.iterdir():
@@ -201,14 +231,13 @@ if uploaded_files:
 
     # Rimozione cartelle `_unz` residue
     for dir_unz in root_temp.rglob('*_unz'):
-        if dir_unz.is_dir():
-            shutil.rmtree(dir_unz, ignore_errors=True)
+        shutil.rmtree(dir_unz, ignore_errors=True)
 
     # Rimuovo TUTTI i file .p7m residui
     for p7m_file in root_temp.rglob("*.p7m"):
         p7m_file.unlink(missing_ok=True)
 
-    # Creazione ZIP di output (escludendo *_unz e *.p7m)
+    # Creazione ZIP di output
     out_dir = Path(tempfile.mkdtemp(prefix="zip_out_"))
     zip_path = out_dir / output_filename
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
@@ -221,10 +250,14 @@ if uploaded_files:
                 if path.suffix.lower() != '.p7m':
                     zf.write(path, path.name)
 
-    # Anteprima struttura ZIP risultante (filtri _unz e .p7m)
+    # Anteprima struttura ZIP risultante
     st.subheader("Anteprima struttura ZIP risultante")
     with zipfile.ZipFile(zip_path) as zf:
-        paths = [info.filename for info in zf.infolist() if '_unz' not in info.filename and not info.filename.lower().endswith('.p7m')]
+        paths = [
+            info.filename
+            for info in zf.infolist()
+            if '_unz' not in info.filename and not info.filename.lower().endswith('.p7m')
+        ]
     if paths:
         split_paths = [p.split("/") for p in paths]
         max_levels = max(len(parts) for parts in split_paths)
@@ -235,7 +268,7 @@ if uploaded_files:
             df[col] = df[col].mask(df[col] == df[col].shift(), "")
         st.table(df)
 
-    # Download (unico) con key per evitare duplicati
+    # Download del ZIP finale
     with open(zip_path, 'rb') as f:
         st.download_button(
             "Scarica file ZIP con estrazioni",
