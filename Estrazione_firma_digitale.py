@@ -12,7 +12,7 @@ from PIL import Image
 import xml.etree.ElementTree as ET
 
 # --- Costanti per TSL -----------------------------------------------------
-TSL_FILE    = Path("img/TSL-IT.xml")
+TSL_FILE    = Path("img/TSL-IT.txt")
 TRUST_PEM   = Path("trust_store.pem")
 
 def build_trust_store(tsl_path: Path, out_pem: Path):
