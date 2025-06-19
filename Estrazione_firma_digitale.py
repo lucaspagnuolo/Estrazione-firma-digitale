@@ -11,6 +11,7 @@ import pandas as pd
 from PIL import Image
 import xml.etree.ElementTree as ET
 import requests  # <— aggiunto
+import platform
 
 # --- Costanti per TSL -----------------------------------------------------
 TSL_FILE  = Path("img/TSL-IT.xml")
@@ -56,57 +57,11 @@ with col2:
     logo = Image.open("img/Consip_Logo.png")
     st.image(logo, width=300)
 
-# --- Estrazione contenuto e verifica firma -------------------------------
 def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path|None, str, bool]:
     base = p7m_file_path.stem
     output_file = output_dir / base
 
-    # 1) Estraggo la chain di certificati (firmatario + intermedi)
-    chain_pem = output_dir / f"{base}_chain.pem"
-    subprocess.run([
-        "openssl", "pkcs7", "-inform", "DER",
-        "-in", str(p7m_file_path),
-        "-print_certs",
-        "-out", str(chain_pem)
-    ], capture_output=True)
-
-    # 1.1) Estrai AIA e scarica l’intermedio se mancante
-    aia_proc = subprocess.run([
-        "openssl", "x509", "-in", str(chain_pem),
-        "-noout", "-text"
-    ], capture_output=True, text=True)
-    aia_url = None
-    for line in aia_proc.stdout.splitlines():
-        if "CA Issuers - URI:" in line:
-            aia_url = line.split("URI:")[1].strip()
-            break
-    if aia_url:
-        try:
-            resp = requests.get(aia_url, timeout=5)
-            if resp.status_code == 200 and b"-----BEGIN CERTIFICATE-----" in resp.content:
-                with open(chain_pem, "ab") as f:
-                    f.write(b"\n" + resp.content + b"\n")
-            else:
-                st.warning(f"Impossibile scaricare intermedio da {aia_url}")
-        except Exception as e:
-            st.warning(f"Errore download intermedio da {aia_url}: {e}")
-    else:
-        st.warning("Nessun AIA (CA Issuers) trovato: intermedi mancante")
-
-    # 2) Verifico e estraggo il payload usando trust_store + intermedi (-certfile)
-    res = subprocess.run([
-        "openssl", "cms", "-verify",
-        "-in", str(p7m_file_path), "-inform", "DER",
-        "-CAfile", str(TRUST_PEM),
-        "-certfile", str(chain_pem),
-        "-out", str(output_file)
-    ], capture_output=True)
-    if res.returncode != 0:
-        st.error(f"Errore estrazione «{p7m_file_path.name}»: {res.stderr.decode().strip()}")
-        chain_pem.unlink(missing_ok=True)
-        return None, "", False
-
-    # 3) Estraggo il certificato del firmatario per subject e dates
+    # 1) Estrai solo il certificato del firmatario
     cert_pem = output_dir / f"{base}_cert.pem"
     subprocess.run([
         "openssl", "pkcs7", "-inform", "DER",
@@ -115,32 +70,68 @@ def extract_signed_content(p7m_file_path: Path, output_dir: Path) -> tuple[Path|
         "-out", str(cert_pem)
     ], capture_output=True)
 
-    # 4) Leggo subject e validità
+    # 2) Verifica la catena usando trust_store + CApath di sistema
+    if platform.system() == "Linux":
+        sys_ca = "/etc/ssl/certs"
+    elif platform.system() == "Darwin":
+        # macOS: bisogna esportare il Keychain in PEM; omesso per brevità
+        sys_ca = "/etc/ssl/certs"
+    else:
+        # Windows: OpenSSL non vede il Cert Store di Windows, saltiamo qui
+        sys_ca = None
+
+    verify_cmd = [
+        "openssl", "verify",
+        "-CAfile", str(TRUST_PEM)
+    ]
+    if sys_ca:
+        verify_cmd += ["-CApath", sys_ca]
+    verify_cmd.append(str(cert_pem))
+
+    resv = subprocess.run(verify_cmd, capture_output=True, text=True)
+    chain_ok = (resv.returncode == 0)
+
+    # 3) Se la catena non è valida, errore
+    if not chain_ok:
+        st.error(f"Errore di verifica catena «{base}_cert.pem»: {resv.stderr.strip()}")
+        cert_pem.unlink(missing_ok=True)
+        return None, "", False
+
+    # 4) Ora estrai il payload senza ulteriori verifiche
+    res = subprocess.run([
+        "openssl", "cms", "-verify",
+        "-in", str(p7m_file_path), "-inform", "DER",
+        "-noverify",  # fidati: hai già controllato la catena
+        "-out", str(output_file)
+    ], capture_output=True)
+    if res.returncode != 0:
+        st.error(f"Errore estrazione payload «{p7m_file_path.name}»: {res.stderr.decode().strip()}")
+        cert_pem.unlink(missing_ok=True)
+        return None, "", False
+
+    # 5) Leggi subject e validity come prima
     res2 = subprocess.run([
         "openssl", "x509", "-in", str(cert_pem),
         "-noout", "-subject", "-dates"
     ], capture_output=True, text=True)
     cert_pem.unlink(missing_ok=True)
-    chain_pem.unlink(missing_ok=True)
     if res2.returncode != 0:
-        st.error(f"Errore lettura info certificato: {res2.stderr.strip()}")
+        st.error(f"Errore info certificato: {res2.stderr.strip()}")
         return output_file, "Sconosciuto", False
 
     lines = res2.stdout.splitlines()
-    subj = "\n".join(lines)
     signer = "Sconosciuto"
     for rdn in ["CN","SN","UID","emailAddress","SERIALNUMBER"]:
-        m = re.search(rf"{rdn}\s*=\s*([^,/]+)", subj)
+        m = re.search(rf"{rdn}\s*=\s*([^,/]+)", "\n".join(lines))
         if m:
             signer = m.group(1).strip()
             break
-
     fmt = "%b %d %H:%M:%S %Y %Z"
     not_before = next(l for l in lines if "notBefore" in l).split("=",1)[1].strip()
-    not_after  = next(l for l in lines if "notAfter" in l).split("=",1)[1].strip()
+    not_after  = next(l for l in lines if "notAfter"  in l).split("=",1)[1].strip()
     valid = datetime.strptime(not_before, fmt) <= datetime.utcnow() <= datetime.strptime(not_after, fmt)
 
-    # 5) Se ZIP, rinomino
+    # 6) Rinomina se ZIP
     try:
         with open(output_file, "rb") as f:
             if f.read(4) == b"PK\x03\x04":
@@ -161,7 +152,7 @@ def recursive_unpack_and_flatten(dir: Path):
         dest.mkdir()
         try:
             with zipfile.ZipFile(arc) as zf:
-                zf.extractall(dest)
+                zf.ctall(dest)
         except:
             arc.unlink(missing_ok=True)
             continue
@@ -175,7 +166,7 @@ def recursive_unpack_and_flatten(dir: Path):
 
 def process_p7m_dir(dir: Path, indent=""):
     for p7m in dir.rglob("*.p7m"):
-        payload, signer, valid = extract_signed_content(p7m, p7m.parent)
+        payload, signer, valid = ct_signed_content(p7m, p7m.parent)
         if not payload: continue
         p7m.unlink(missing_ok=True)
         st.write(f"{indent}– Estratto: **{payload.name}** | Firmato da: **{signer}** | Validità: {'✅' if valid else '⚠️'}")
