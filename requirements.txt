@@ -2,4 +2,4 @@ streamlit
 pyopenssl
 Pillow
 pandas 
-platform
+
