@@ -58,7 +58,16 @@ with col2:
     logo = Image.open("img/Consip_Logo.png")
     st.image(logo, width=300)
 
-def extract_signed_content(p7m_path: Path, out_dir: Path) -> tuple[Path|None, str, bool]:
+def extract_signed_content(p7m_path: Path, out_dir: Path) -> tuple[Path | None, str, bool]:
+    """
+    Estrae il payload da un file .p7m, verifica la firma CAdES usando:
+     - il trust store generato da TSL-IT (TSL-CA.pem)
+     - il CApath di sistema (/etc/ssl/certs)
+     - un fallback AIA + intermedi se necessario
+     - accetta “self signed certificate in certificate chain” 
+       se la CA self‑signed è presente nel trust store.
+    Restituisce: (percorso_payload, signer_CN, validità_bool)
+    """
     base = p7m_path.stem
     payload_out = out_dir / base
 
@@ -70,24 +79,31 @@ def extract_signed_content(p7m_path: Path, out_dir: Path) -> tuple[Path|None, st
         "-out", str(cert_pem)
     ], capture_output=True)
 
-    # 2) Tentativo 1: verifica catena con trust_store + CApath
+    # 2) Prima verifica: trust_store + CApath di sistema
     verify_cmd = ["openssl", "verify", "-CAfile", str(TRUST_PEM)]
     if platform.system() in ("Linux", "Darwin"):
         verify_cmd += ["-CApath", "/etc/ssl/certs"]
     verify_cmd.append(str(cert_pem))
-    resv = subprocess.run(verify_cmd, capture_output=True, text=True)
+    p1 = subprocess.run(verify_cmd, capture_output=True, text=True)
+    stderr1 = p1.stderr.lower()
+    chain_ok = (p1.returncode == 0)
+
+    # accetta self‑signed se in trust store
+    if not chain_ok and "self signed certificate in certificate chain" in stderr1:
+        chain_ok = True
 
     chain_pem = out_dir / f"{base}_chain.pem"
-    # 3) Se fallisce, Tentativo 2: estrai tutti i cert e scarica intermedio via AIA
-    if resv.returncode != 0:
-        # estrai chain completa
+
+    # 3) Se fallisce per altro motivo, fallback AIA + -untrusted
+    if not chain_ok:
+        # estrai tutti i certificati dal .p7m
         subprocess.run([
             "openssl", "pkcs7", "-inform", "DER",
             "-in", str(p7m_path), "-print_certs",
             "-out", str(chain_pem)
         ], capture_output=True)
 
-        # cerca URL AIA per scaricare eventuale intermedio mancante
+        # leggi AIA per scaricare intermedi mancanti
         aia = subprocess.run([
             "openssl", "x509", "-in", str(chain_pem),
             "-noout", "-text"
@@ -97,7 +113,6 @@ def extract_signed_content(p7m_path: Path, out_dir: Path) -> tuple[Path|None, st
             if "CA Issuers - URI:" in line:
                 url = line.split("URI:")[1].strip()
                 break
-
         if url:
             try:
                 r = requests.get(url, timeout=5)
@@ -107,35 +122,38 @@ def extract_signed_content(p7m_path: Path, out_dir: Path) -> tuple[Path|None, st
             except Exception:
                 pass
 
-        # riprova la verifica usando chain.pem come intermedi
-        verify_cmd2 = [
+        # riprova verifica con intermedi specificati
+        p2 = subprocess.run([
             "openssl", "verify",
             "-CAfile", str(TRUST_PEM),
             "-untrusted", str(chain_pem),
             str(cert_pem)
-        ]
-        resv = subprocess.run(verify_cmd2, capture_output=True, text=True)
+        ], capture_output=True, text=True)
+        stderr2 = p2.stderr.lower()
+        chain_ok = (p2.returncode == 0)
+        if not chain_ok and "self signed certificate in certificate chain" in stderr2:
+            chain_ok = True
 
-    # se ancora fallisce, abort
-    if resv.returncode != 0:
-        st.error(f"Errore verifica catena «{cert_pem.name}»: {resv.stderr.strip()}")
+    # se ancora non valido, abort
+    if not chain_ok:
+        st.error(f"Errore verifica catena «{cert_pem.name}»: {p1.stderr.strip()}")
         cert_pem.unlink(missing_ok=True)
         chain_pem.unlink(missing_ok=True)
         return None, "", False
 
-    # 4) Estraggo il payload (fidati della catena già verificata)
-    resc = subprocess.run([
+    # 4) Estrai il payload senza rielaborare la firma (già validata)
+    res = subprocess.run([
         "openssl", "cms", "-verify",
         "-in", str(p7m_path), "-inform", "DER",
         "-noverify", "-out", str(payload_out)
     ], capture_output=True)
-    if resc.returncode != 0:
-        st.error(f"Errore estrazione «{p7m_path.name}»: {resc.stderr.decode().strip()}")
+    if res.returncode != 0:
+        st.error(f"Errore estrazione «{p7m_path.name}»: {res.stderr.decode().strip()}")
         cert_pem.unlink(missing_ok=True)
         chain_pem.unlink(missing_ok=True)
         return None, "", False
 
-    # 5) Leggi subject e dates dal cert del firmatario
+    # 5) Estrai subject e validity dal certificato
     res2 = subprocess.run([
         "openssl", "x509", "-in", str(cert_pem),
         "-noout", "-subject", "-dates"
@@ -147,27 +165,27 @@ def extract_signed_content(p7m_path: Path, out_dir: Path) -> tuple[Path|None, st
         return payload_out, "Sconosciuto", False
 
     lines = res2.stdout.splitlines()
-    subj = "\n".join(lines)
+    subj_text = "\n".join(lines)
     signer = "Sconosciuto"
-    for rdn in ("CN","SN","UID","emailAddress","SERIALNUMBER"):
-        m = re.search(rf"{rdn}\s*=\s*([^,/]+)", subj)
+    for rdn in ("CN", "SN", "UID", "emailAddress", "SERIALNUMBER"):
+        m = re.search(rf"{rdn}\s*=\s*([^,/]+)", subj_text)
         if m:
             signer = m.group(1).strip()
             break
 
     fmt = "%b %d %H:%M:%S %Y %Z"
-    nb = next(l for l in lines if "notBefore" in l).split("=",1)[1].strip()
-    na = next(l for l in lines if "notAfter"  in l).split("=",1)[1].strip()
-    valid = datetime.strptime(nb, fmt) <= datetime.utcnow() <= datetime.strptime(na, fmt)
+    not_before = next(l for l in lines if "notBefore" in l).split("=",1)[1].strip()
+    not_after  = next(l for l in lines if "notAfter"  in l).split("=",1)[1].strip()
+    valid = datetime.strptime(not_before, fmt) <= datetime.utcnow() <= datetime.strptime(not_after, fmt)
 
-    # 6) Se payload è ZIP, rinomina in .zip
+    # 6) Rinomina in .zip se necessario
     try:
         with open(payload_out, "rb") as f:
             if f.read(4) == b"PK\x03\x04":
                 newz = payload_out.with_suffix(".zip")
                 payload_out.rename(newz)
                 payload_out = newz
-    except:
+    except Exception:
         pass
 
     return payload_out, signer, valid
