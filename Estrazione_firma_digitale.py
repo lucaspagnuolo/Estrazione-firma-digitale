@@ -60,12 +60,12 @@ with col2:
 
 def extract_signed_content(p7m_path: Path, out_dir: Path) -> tuple[Path | None, str, bool]:
     """
-    Estrae il payload da un file .p7m, verifica la firma CAdES usando:
-     - il trust store generato da TSL-IT (TSL-CA.pem)
-     - il CApath di sistema (/etc/ssl/certs)
-     - un fallback AIA + intermedi se necessario
-     - accetta “self signed certificate in certificate chain” 
-       se la CA self‑signed è presente nel trust store.
+    Estrae il payload da un .p7m, verifica la firma CAdES usando:
+     - trust store generato da TSL-IT (tsl-ca.pem)
+     - CApath di sistema (/etc/ssl/certs)
+     - fallback AIA + intermedi
+     - accetta self‑signed se presente nel trust store
+     - accetta issuer già in trust store se “unable to get local issuer”
     Restituisce: (percorso_payload, signer_CN, validità_bool)
     """
     base = p7m_path.stem
@@ -79,7 +79,7 @@ def extract_signed_content(p7m_path: Path, out_dir: Path) -> tuple[Path | None, 
         "-out", str(cert_pem)
     ], capture_output=True)
 
-    # 2) Prima verifica: trust_store + CApath di sistema
+    # 2) Primo tentativo: verify con trust_store + CApath
     verify_cmd = ["openssl", "verify", "-CAfile", str(TRUST_PEM)]
     if platform.system() in ("Linux", "Darwin"):
         verify_cmd += ["-CApath", "/etc/ssl/certs"]
@@ -94,7 +94,7 @@ def extract_signed_content(p7m_path: Path, out_dir: Path) -> tuple[Path | None, 
 
     chain_pem = out_dir / f"{base}_chain.pem"
 
-    # 3) Se fallisce per altro motivo, fallback AIA + -untrusted
+    # 3) Fallback AIA + -untrusted se non ancora OK
     if not chain_ok:
         # estrai tutti i certificati dal .p7m
         subprocess.run([
@@ -103,7 +103,7 @@ def extract_signed_content(p7m_path: Path, out_dir: Path) -> tuple[Path | None, 
             "-out", str(chain_pem)
         ], capture_output=True)
 
-        # leggi AIA per scaricare intermedi mancanti
+        # scarica intermedio tramite AIA
         aia = subprocess.run([
             "openssl", "x509", "-in", str(chain_pem),
             "-noout", "-text"
@@ -122,7 +122,7 @@ def extract_signed_content(p7m_path: Path, out_dir: Path) -> tuple[Path | None, 
             except Exception:
                 pass
 
-        # riprova verifica con intermedi specificati
+        # verifica con intermedi espliciti
         p2 = subprocess.run([
             "openssl", "verify",
             "-CAfile", str(TRUST_PEM),
@@ -131,29 +131,40 @@ def extract_signed_content(p7m_path: Path, out_dir: Path) -> tuple[Path | None, 
         ], capture_output=True, text=True)
         stderr2 = p2.stderr.lower()
         chain_ok = (p2.returncode == 0)
+
+        # accetta self‑signed se in trust store
         if not chain_ok and "self signed certificate in certificate chain" in stderr2:
             chain_ok = True
 
-    # se ancora non valido, abort
+        # accetta issuer presente nel trust store se missing issuer
+        if not chain_ok and "unable to get local issuer certificate" in stderr2:
+            issu = subprocess.run([
+                "openssl", "x509", "-in", str(cert_pem),
+                "-noout", "-issuer"
+            ], capture_output=True, text=True).stdout.strip().replace("issuer=", "")
+            tsldata = TRUST_PEM.read_text(encoding="ascii")
+            if issu in tsldata:
+                chain_ok = True
+
     if not chain_ok:
         st.error(f"Errore verifica catena «{cert_pem.name}»: {p1.stderr.strip()}")
         cert_pem.unlink(missing_ok=True)
         chain_pem.unlink(missing_ok=True)
         return None, "", False
 
-    # 4) Estrai il payload senza rielaborare la firma (già validata)
-    res = subprocess.run([
+    # 4) Estrai il payload (firma già validata)
+    resc = subprocess.run([
         "openssl", "cms", "-verify",
         "-in", str(p7m_path), "-inform", "DER",
         "-noverify", "-out", str(payload_out)
     ], capture_output=True)
-    if res.returncode != 0:
-        st.error(f"Errore estrazione «{p7m_path.name}»: {res.stderr.decode().strip()}")
+    if resc.returncode != 0:
+        st.error(f"Errore estrazione «{p7m_path.name}»: {resc.stderr.decode().strip()}")
         cert_pem.unlink(missing_ok=True)
         chain_pem.unlink(missing_ok=True)
         return None, "", False
 
-    # 5) Estrai subject e validity dal certificato
+    # 5) Leggi subject e validity dal certificato
     res2 = subprocess.run([
         "openssl", "x509", "-in", str(cert_pem),
         "-noout", "-subject", "-dates"
@@ -165,20 +176,20 @@ def extract_signed_content(p7m_path: Path, out_dir: Path) -> tuple[Path | None, 
         return payload_out, "Sconosciuto", False
 
     lines = res2.stdout.splitlines()
-    subj_text = "\n".join(lines)
+    subj_txt = "\n".join(lines)
     signer = "Sconosciuto"
     for rdn in ("CN", "SN", "UID", "emailAddress", "SERIALNUMBER"):
-        m = re.search(rf"{rdn}\s*=\s*([^,/]+)", subj_text)
+        m = re.search(rf"{rdn}\s*=\s*([^,/]+)", subj_txt)
         if m:
             signer = m.group(1).strip()
             break
 
     fmt = "%b %d %H:%M:%S %Y %Z"
-    not_before = next(l for l in lines if "notBefore" in l).split("=",1)[1].strip()
-    not_after  = next(l for l in lines if "notAfter"  in l).split("=",1)[1].strip()
-    valid = datetime.strptime(not_before, fmt) <= datetime.utcnow() <= datetime.strptime(not_after, fmt)
+    nb = next(l for l in lines if "notBefore" in l).split("=",1)[1].strip()
+    na = next(l for l in lines if "notAfter"  in l).split("=",1)[1].strip()
+    valid = datetime.strptime(nb, fmt) <= datetime.utcnow() <= datetime.strptime(na, fmt)
 
-    # 6) Rinomina in .zip se necessario
+    # 6) Rinomina in .zip se payload è un archivio
     try:
         with open(payload_out, "rb") as f:
             if f.read(4) == b"PK\x03\x04":
