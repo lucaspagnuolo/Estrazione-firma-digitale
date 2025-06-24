@@ -53,8 +53,8 @@ except Exception as e:
 # --- UI Header -------------------------------------------------------------
 col1, col2 = st.columns([7,3])
 with col1:
-    st.title("ImperialSign")
-    st.caption("Estrai con fiducia. Verifica la firma digitale. Archivia con ordine.")
+    st.title("ImperialSign 🔒📜")
+    st.caption("Estrai con fiducia. Verifica la firma digitale. Archivia con ordine. 🛡️✅")
 with col2:
     logo = Image.open("img/Consip_Logo.png")
     st.image(logo, width=300)
