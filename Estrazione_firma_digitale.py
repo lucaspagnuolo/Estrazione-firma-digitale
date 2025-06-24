@@ -64,8 +64,8 @@ def extract_signed_content(p7m_path: Path, out_dir: Path) -> tuple[Path | None, 
      - trust store generato da TSL-IT (tsl-ca.pem)
      - CApath di sistema (/etc/ssl/certs)
      - fallback AIA + intermedi
-     - accetta self‑signed se presente nel trust store
-     - accetta issuer già in trust store se “unable to get local issuer”
+     - accetta self-signed se presente nel trust store
+     - accetta issuer già in trust store quando "unable to get local issuer"
     Restituisce: (percorso_payload, signer_CN, validità_bool)
     """
     base = p7m_path.stem
@@ -88,7 +88,7 @@ def extract_signed_content(p7m_path: Path, out_dir: Path) -> tuple[Path | None, 
     stderr1 = p1.stderr.lower()
     chain_ok = (p1.returncode == 0)
 
-    # accetta self‑signed se in trust store
+    # accetta self-signed se in trust store
     if not chain_ok and "self signed certificate in certificate chain" in stderr1:
         chain_ok = True
 
@@ -96,23 +96,20 @@ def extract_signed_content(p7m_path: Path, out_dir: Path) -> tuple[Path | None, 
 
     # 3) Fallback AIA + -untrusted se non ancora OK
     if not chain_ok:
-        # estrai tutti i certificati dal .p7m
         subprocess.run([
             "openssl", "pkcs7", "-inform", "DER",
             "-in", str(p7m_path), "-print_certs",
             "-out", str(chain_pem)
         ], capture_output=True)
 
-        # scarica intermedio tramite AIA
+        # scarica intermedio via AIA
         aia = subprocess.run([
             "openssl", "x509", "-in", str(chain_pem),
             "-noout", "-text"
         ], capture_output=True, text=True)
-        url = None
-        for line in aia.stdout.splitlines():
-            if "CA Issuers - URI:" in line:
-                url = line.split("URI:")[1].strip()
-                break
+        url = next((line.split("URI:")[1].strip()
+                    for line in aia.stdout.splitlines()
+                    if "CA Issuers - URI:" in line), None)
         if url:
             try:
                 r = requests.get(url, timeout=5)
@@ -132,22 +129,38 @@ def extract_signed_content(p7m_path: Path, out_dir: Path) -> tuple[Path | None, 
         stderr2 = p2.stderr.lower()
         chain_ok = (p2.returncode == 0)
 
-        # accetta self‑signed se in trust store
+        # accetta self-signed se in trust store
         if not chain_ok and "self signed certificate in certificate chain" in stderr2:
             chain_ok = True
 
         # accetta issuer presente nel trust store se missing issuer
         if not chain_ok and "unable to get local issuer certificate" in stderr2:
+            # estrai issuer dal certificato firmatario
             issu = subprocess.run([
                 "openssl", "x509", "-in", str(cert_pem),
                 "-noout", "-issuer"
             ], capture_output=True, text=True).stdout.strip().replace("issuer=", "")
-            tsldata = TRUST_PEM.read_text(encoding="ascii")
-            if issu in tsldata:
+
+            # estrai tutti i subject dai certificati in TRUST_PEM
+            subjects = []
+            pem_data = TRUST_PEM.read_text(encoding="ascii")
+            for block in pem_data.split("-----END CERTIFICATE-----"):
+                if "BEGIN CERTIFICATE" not in block:
+                    continue
+                single_pem = block + "-----END CERTIFICATE-----\n"
+                p = subprocess.run(
+                    ["openssl", "x509", "-noout", "-subject"],
+                    input=single_pem, capture_output=True, text=True
+                )
+                subj = p.stdout.strip().replace("subject=", "")
+                subjects.append(subj)
+
+            # confronto DN-to-DN
+            if issu in subjects:
                 chain_ok = True
 
     if not chain_ok:
-        st.error(f"Errore verifica catena «{cert_pem.name}»: {p1.stderr.strip()}")
+        st.error(f"Errore verifica catena «{cert_pem.name}»: {p2.stderr.strip() if 'p2' in locals() else p1.stderr.strip()}")
         cert_pem.unlink(missing_ok=True)
         chain_pem.unlink(missing_ok=True)
         return None, "", False
