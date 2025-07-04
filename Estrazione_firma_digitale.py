@@ -41,7 +41,7 @@ def build_trust_store(tsl_path: Path, out_pem: Path):
                 f.write(b64[i:i+64].encode('ascii') + b"\n")
             f.write(b"-----END CERTIFICATE-----\n\n")
 
-# Costruisco il trust store all’avvio (anche se non serve per verifica, lo manteniamo per compatibilità)
+# Costruisco il trust store all’avvio
 try:
     build_trust_store(TSL_FILE, TRUST_PEM)
 except Exception as e:
@@ -57,10 +57,11 @@ with col2:
     logo = Image.open("img/Consip_Logo.png")
     st.image(logo, width=300)
 
-# --- Funzione di estrazione semplificata ----------------------------------
+# --- Funzione di estrazione semplificata con messaggi personalizzati -------
 def extract_signed_content(p7m_path: Path, out_dir: Path) -> tuple[Path | None, str, bool]:
     """
     Estrae il payload da un .p7m e verifica la validità della firma solo in base alle date di validità del certificato.
+    In caso di errore, mostra messaggi utente descrittivi.
     Restituisce: (percorso_payload, signer_CN, validità_bool)
     """
     base = p7m_path.stem
@@ -77,9 +78,24 @@ def extract_signed_content(p7m_path: Path, out_dir: Path) -> tuple[Path | None, 
     resc = subprocess.run([
         "openssl", "cms", "-verify", "-in", str(p7m_path),
         "-inform", "DER", "-noverify", "-out", str(payload_out)
-    ], capture_output=True)
+    ], capture_output=True, text=True)
     if resc.returncode != 0:
-        st.error(f"Errore estrazione «{p7m_path.name}»: {resc.stderr.decode().strip()}")
+        err = resc.stderr.lower()
+        if "bad signature" in err:
+            msg = (
+                f"Impossibile verificare la firma di '{p7m_path.name}': firma non valida. "
+                "Il file potrebbe essere corrotto o modificato dopo la firma."
+            )
+        elif "unknown format" in err or "error" in err:
+            msg = (
+                f"Formato del file '{p7m_path.name}' non riconosciuto o non supportato. "
+                "Verifica che sia un .p7m in formato DER valido."
+            )
+        else:
+            msg = (
+                f"Errore durante l'estrazione di '{p7m_path.name}': {resc.stderr.strip()}"
+            )
+        st.error(msg)
         cert_pem.unlink(missing_ok=True)
         return None, "", False
 
@@ -90,18 +106,30 @@ def extract_signed_content(p7m_path: Path, out_dir: Path) -> tuple[Path | None, 
     ], capture_output=True, text=True)
     cert_pem.unlink(missing_ok=True)
     if res2.returncode != 0:
-        st.error(f"Errore lettura info cert: {res2.stderr.strip()}")
+        st.error(
+            f"Impossibile leggere le informazioni del certificato estratto da '{p7m_path.name}'. "
+            "Il certificato può essere corrotto o non valido."
+        )
         return payload_out, "Sconosciuto", False
 
+    # parse subject e date
     lines = res2.stdout.splitlines()
     subj = "\n".join(lines)
     m = re.search(r"(?:CN|SN|UID|emailAddress|SERIALNUMBER)\s*=\s*([^,\\/]+)", subj)
     signer = m.group(1).strip() if m else "Sconosciuto"
 
     fmt = "%b %d %H:%M:%S %Y %Z"
-    not_before = next(l for l in lines if "notBefore" in l).split("=", 1)[1].strip()
-    not_after = next(l for l in lines if "notAfter" in l).split("=", 1)[1].strip()
-    valid = datetime.strptime(not_before, fmt) <= datetime.utcnow() <= datetime.strptime(not_after, fmt)
+    not_before = next((l for l in lines if "notbefore" in l.lower()), None)
+    not_after = next((l for l in lines if "notafter" in l.lower()), None)
+    try:
+        nb = not_before.split("=", 1)[1].strip()
+        na = not_after.split("=", 1)[1].strip()
+        valid = datetime.strptime(nb, fmt) <= datetime.utcnow() <= datetime.strptime(na, fmt)
+    except Exception:
+        st.error(
+            f"Date di validità del certificato non riconosciute per '{p7m_path.name}'."
+        )
+        valid = False
 
     # 4) rinomina in .zip se payload è un archivio
     try:
@@ -115,7 +143,7 @@ def extract_signed_content(p7m_path: Path, out_dir: Path) -> tuple[Path | None, 
 
     return payload_out, signer, valid
 
-# --- Funzioni di supporto per ZIP ----------------------------------------
+# --- ZIP annidati e processing .p7m ---------------------------------------
 def recursive_unpack_and_flatten(d: Path):
     for z in d.rglob("*.zip"):
         if not z.is_file():
