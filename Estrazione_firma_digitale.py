@@ -18,17 +18,12 @@ TSL_FILE = Path("img/TSL-IT.xml")
 TRUST_PEM = Path("tsl-ca.pem")
 
 def build_trust_store(tsl_path: Path, out_pem: Path):
-    """
-    Estrae tutti i <ds:X509Certificate> dal TSL-IT.xml e li converte
-    in un unico file PEM, con wrapping a 64 caratteri per riga.
-    """
     ns = {
         'tsl': 'http://uri.etsi.org/02231/v2#',
         'ds':  'http://www.w3.org/2000/09/xmldsig#'
     }
     tree = ET.parse(tsl_path)
-    root = tree.getroot()
-    certs = root.findall('.//ds:X509Certificate', ns)
+    certs = tree.getroot().findall('.//ds:X509Certificate', ns)
     if not certs:
         raise RuntimeError(f"Nessun certificato trovato in {tsl_path}")
     with open(out_pem, 'wb') as f:
@@ -41,14 +36,12 @@ def build_trust_store(tsl_path: Path, out_pem: Path):
                 f.write(b64[i:i+64].encode('ascii') + b"\n")
             f.write(b"-----END CERTIFICATE-----\n\n")
 
-# Costruisco il trust store all’avvio
 try:
     build_trust_store(TSL_FILE, TRUST_PEM)
 except Exception as e:
     st.error(f"Impossibile costruire il trust store: {e}")
     st.stop()
 
-# --- UI Header -------------------------------------------------------------
 col1, col2 = st.columns([7, 3])
 with col1:
     st.title("ImperialSign 🔒📜")
@@ -57,75 +50,80 @@ with col2:
     logo = Image.open("img/Consip_Logo.png")
     st.image(logo, width=300)
 
-# --- Funzione di estrazione semplificata con messaggi personalizzati -------
+# --- Funzione di estrazione con fallback e avvisi ------------------------
 def extract_signed_content(p7m_path: Path, out_dir: Path) -> tuple[Path | None, str, bool]:
-    """
-    Estrae il payload da un .p7m e verifica la validità solo su date del certificato.
-    Rinomina automaticamente in .pdf se il contenuto è PDF.
-    """
     base = p7m_path.stem
     payload_out = out_dir / base
     cert_pem = out_dir / f"{base}_cert.pem"
 
-    # Estrai il certificato firmatario
+    # Estrai certificato firmatario
     subprocess.run([
         "openssl", "pkcs7", "-inform", "DER", "-in", str(p7m_path),
         "-print_certs", "-out", str(cert_pem)
     ], capture_output=True)
 
-    # Estrai payload senza verifiche catena
-    resc = subprocess.run([
+    # Estraggo payload con cms noverify
+    proc = subprocess.run([
         "openssl", "cms", "-verify", "-in", str(p7m_path),
         "-inform", "DER", "-noverify", "-out", str(payload_out)
     ], capture_output=True, text=True)
-    if resc.returncode != 0:
-        err = resc.stderr.lower()
-        if "bad signature" in err:
-            st.error(f"{p7m_path.name}: firma non valida, file potenzialmente corrotto.")
-        else:
-            st.error(f"Errore estrazione '{p7m_path.name}': {resc.stderr.strip()}")
-        cert_pem.unlink(missing_ok=True)
-        return None, "", False
 
-    # Rinomina in .pdf se PDF
+    if proc.returncode != 0:
+        err = proc.stderr.lower()
+        if "bad signature" in err:
+            st.warning(
+                f"{p7m_path.name}: firma non valida. Estraggo contenuto ma verifica date.")
+            # Fallback con smime
+            fallback = subprocess.run([
+                "openssl", "smime", "-verify", "-inform", "DER",
+                "-in", str(p7m_path), "-noverify", "-out", str(payload_out)
+            ], capture_output=True, text=True)
+            if fallback.returncode != 0:
+                st.error(f"Estrazione fallback fallita: {fallback.stderr.strip()}")
+                cert_pem.unlink(missing_ok=True)
+                return None, "", False
+        else:
+            st.error(f"Errore estrazione '{p7m_path.name}': {proc.stderr.strip()}")
+            cert_pem.unlink(missing_ok=True)
+            return None, "", False
+
+    # Rinomina in .pdf se riconosce PDF
     try:
-        with open(payload_out, "rb") as f:
-            header = f.read(4)
-        if header == b"%PDF":
-            new_pdf = payload_out.with_suffix(".pdf")
-            payload_out.rename(new_pdf)
-            payload_out = new_pdf
+        with open(payload_out, 'rb') as f:
+            if f.read(4) == b'%PDF':
+                new_pdf = payload_out.with_suffix('.pdf')
+                payload_out.rename(new_pdf)
+                payload_out = new_pdf
     except Exception:
         pass
 
-    # Lettura soggetto + dates
-    res2 = subprocess.run([
+    # Leggi info certificato
+    cert_info = subprocess.run([
         "openssl", "x509", "-in", str(cert_pem),
         "-noout", "-subject", "-dates"
     ], capture_output=True, text=True)
     cert_pem.unlink(missing_ok=True)
-    if res2.returncode != 0:
-        st.error(f"Impossibile leggere info certificato da '{p7m_path.name}'.")
+    if cert_info.returncode != 0:
+        st.error(f"Impossibile leggere info certificato per '{p7m_path.name}'")
         return payload_out, "Sconosciuto", False
 
-    lines = res2.stdout.lower().splitlines()
-    subject = "\n".join(lines)
-    signer = re.search(r"cn\s*=\s*([^,]+)", subject)
-    signer = signer.group(1).strip() if signer else "Sconosciuto"
+    lines = cert_info.stdout.splitlines()
+    subj = "\n".join(lines)
+    m = re.search(r"CN\s*=\s*([^,\/]+)", subj)
+    signer = m.group(1).strip() if m else "Sconosciuto"
 
-    # Validità date
+    # Verifica date
+    fmt = "%b %d %H:%M:%S %Y %Z"
     try:
-        nb = next(l for l in lines if "notbefore=" in l).split("=",1)[1]
-        na = next(l for l in lines if "notafter=" in l).split("=",1)[1]
-        fmt = "%b %d %H:%M:%S %Y %Z"
-        valid = datetime.strptime(nb, fmt) <= datetime.utcnow() <= datetime.strptime(na, fmt)
+        start = next(l for l in lines if 'notBefore' in l).split('=',1)[1].strip()
+        end = next(l for l in lines if 'notAfter' in l).split('=',1)[1].strip()
+        valid = datetime.strptime(start, fmt) <= datetime.utcnow() <= datetime.strptime(end, fmt)
     except Exception:
-        st.error(f"Impossibile interpretare date validità per '{p7m_path.name}'.")
         valid = False
 
     return payload_out, signer, valid
 
-# --- Funzioni di supporto per ZIP ----------------------------------------
+# --- ZIP annidati e flatten -----------------------------------------------
 def recursive_unpack_and_flatten(d: Path):
     for z in d.rglob("*.zip"):
         if not z.is_file():
@@ -147,8 +145,7 @@ def recursive_unpack_and_flatten(d: Path):
             children[0].rmdir()
         recursive_unpack_and_flatten(dst)
 
-# Funzione per processare directory di .p7m
-
+# --- Processa directory di .p7m -------------------------------------------
 def process_p7m_dir(d: Path, indent=""):
     for p7m in d.rglob("*.p7m"):
         payload, signer, valid = extract_signed_content(p7m, p7m.parent)
@@ -210,7 +207,7 @@ if uploads:
     for p in root.rglob("*.p7m"):
         p.unlink(missing_ok=True)
 
-    # Creazione e preview del ZIP finale
+    # Creazione ZIP finale e anteprima struttura
     outd = Path(tempfile.mkdtemp(prefix="zip_out_"))
     zipf = outd / output_filename
     with zipfile.ZipFile(zipf, 'w', zipfile.ZIP_DEFLATED) as zf:
