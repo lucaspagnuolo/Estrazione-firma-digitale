@@ -9,8 +9,6 @@ from datetime import datetime
 import re
 import pandas as pd
 import xml.etree.ElementTree as ET
-import platform
-import requests
 
 # --- Costanti per TSL -----------------------------------------------------
 TSL_FILE = Path("img/TSL-IT.xml")
@@ -39,22 +37,18 @@ def build_trust_store(tsl_path: Path, out_pem: Path):
                 f.write(b64[i:i+64].encode('ascii') + b"\n")
             f.write(b"-----END CERTIFICATE-----\n\n")
 
-
 try:
     build_trust_store(TSL_FILE, TRUST_PEM)
 except Exception as e:
     st.error(f"Impossibile costruire il trust store: {e}")
     st.stop()
 
-# --- HEADER SENZA IMMAGINE -----------------------------------------------
-col1 = st.container()
-
-with col1:
-    st.title("ImperialSign 🔒📜")
-    st.caption("Estrai con fiducia. Verifica la firma digitale. Archivia con ordine. 🛡️✅")
+# --- HEADER --------------------------------------------------------------
+st.title("ImperialSign 🔒📜")
+st.caption("Estrai con fiducia. Verifica la firma digitale. Archivia con ordine. 🛡️✅")
 
 
-# --- Funzione di estrazione ----------------------------------------------
+# --- Estrazione p7m ------------------------------------------------------
 def extract_signed_content(p7m_path: Path, out_dir: Path) -> tuple[Path | None, str, bool]:
     base = p7m_path.stem
     payload_out = out_dir / base
@@ -74,7 +68,7 @@ def extract_signed_content(p7m_path: Path, out_dir: Path) -> tuple[Path | None, 
         err = proc.stderr.lower()
 
         if "bad signature" in err:
-            st.warning(f"{p7m_path.name}: firma non valida. Estratto comunque.")
+            st.warning(f"{p7m_path.name}: firma non valida. Estraggo contenuto.")
 
             fallback = subprocess.run([
                 "openssl", "smime", "-verify", "-inform", "DER",
@@ -82,7 +76,7 @@ def extract_signed_content(p7m_path: Path, out_dir: Path) -> tuple[Path | None, 
             ], capture_output=True, text=True)
 
             if fallback.returncode != 0:
-                st.error(f"Fallback fallito: {fallback.stderr.strip()}")
+                st.error(f"Estrazione fallback fallita: {fallback.stderr.strip()}")
                 cert_pem.unlink(missing_ok=True)
                 return None, "", False
         else:
@@ -130,9 +124,12 @@ def extract_signed_content(p7m_path: Path, out_dir: Path) -> tuple[Path | None, 
     return payload_out, signer, valid
 
 
-# --- ZIP nested -----------------------------------------------------------
+# --- ZIP annidati --------------------------------------------------------
 def recursive_unpack_and_flatten(d: Path):
     for z in d.rglob("*.zip"):
+        if not z.is_file():
+            continue
+
         dst = z.parent / f"{z.stem}_unz"
         shutil.rmtree(dst, ignore_errors=True)
         dst.mkdir()
@@ -155,7 +152,7 @@ def recursive_unpack_and_flatten(d: Path):
         recursive_unpack_and_flatten(dst)
 
 
-# --- Process directory ----------------------------------------------------
+# --- Process directory ---------------------------------------------------
 def process_p7m_dir(d: Path, indent=""):
     for p7m in d.rglob("*.p7m"):
         payload, signer, valid = extract_signed_content(p7m, p7m.parent)
@@ -173,12 +170,12 @@ def process_p7m_dir(d: Path, indent=""):
                     zf.extractall(payload.parent)
                 recursive_unpack_and_flatten(payload.parent)
             except Exception:
-                st.error(f"Errore estrazione ZIP interno: {payload.name}")
+                st.error(f"Errore estrazione ZIP interno di {payload.name}")
 
             process_p7m_dir(payload.parent, indent + "  ")
 
 
-# --- UI -------------------------------------------------------------------
+# --- UI principale -------------------------------------------------------
 output_name = st.text_input("Nome ZIP di output (.zip):", value="all_extracted.zip")
 output_filename = output_name if output_name.lower().endswith(".zip") else output_name + ".zip"
 
@@ -229,21 +226,47 @@ if uploads:
         else:
             st.warning(f"Ignoro {name}")
 
-    # Cleanup
+    # Pulizia
     for d in root.rglob("*_unz"):
         shutil.rmtree(d, ignore_errors=True)
 
     for p in root.rglob("*.p7m"):
         p.unlink(missing_ok=True)
 
-    # ZIP finale
+    # --- ZIP FINALE + ANTEPRIMA ------------------------------------------
     outd = Path(tempfile.mkdtemp(prefix="zip_out_"))
     zipf = outd / output_filename
 
     with zipfile.ZipFile(zipf, 'w', zipfile.ZIP_DEFLATED) as zf:
-        for file in root.rglob('*'):
-            if file.is_file() and file.suffix.lower() != '.p7m':
-                zf.write(file, file.relative_to(root))
+        for path in root.iterdir():
+            if path.is_dir():
+                for file in path.rglob('*'):
+                    if file.is_file() and '_unz' not in file.parts and file.suffix.lower() != '.p7m':
+                        zf.write(file, file.relative_to(root))
+            else:
+                if path.suffix.lower() != '.p7m':
+                    zf.write(path, path.name)
+
+    st.subheader("Anteprima struttura ZIP risultante")
+
+    with zipfile.ZipFile(zipf) as zf:
+        paths = [i.filename for i in zf.infolist()
+                 if '_unz' not in i.filename and not i.filename.lower().endswith('.p7m')]
+
+    if paths:
+        rows = [p.split("/") for p in paths]
+        max_levels = max(len(r) for r in rows)
+        cols = [f"Liv {i+1}" for i in range(max_levels)]
+
+        df = pd.DataFrame(
+            [r + [""]*(max_levels-len(r)) for r in rows],
+            columns=cols
+        )
+
+        for c in cols:
+            df[c] = df[c].mask(df[c] == df[c].shift(), "")
+
+        st.table(df)
 
     with open(zipf, 'rb') as f:
         st.download_button(
